@@ -10,8 +10,7 @@ function wake_up_creepers()
 	storage.active_creepers = 0
 
 	for _, surface in pairs(game.surfaces) do
-		local roboports = surface.find_entities_filtered { type = "roboport" }
-		for _, port in pairs(roboports) do
+		for _, port in pairs(surface.find_entities_filtered { type = "roboport" }) do
 			if validate(port) then
 				addPort(port)
 			end
@@ -22,7 +21,7 @@ function wake_up_creepers()
 end
 
 function check_roboports()
-	if storage.active_creepers == nil then
+	if not storage.active_creepers then
 		init()
 		return
 	end
@@ -35,24 +34,14 @@ function check_roboports()
 	local max_creepers = settings.global["concreep-update-count"].value
 
 	for i = 1, max_creepers do
-		if i > #storage.creepers then
-			return
-		end
-		local creeper = get_creeper()
+		if i > #storage.creepers then return end
 
-		if creeper == nil then
-			goto continue
-		end
+		local creeper = get_creeper()
+		if not creeper then goto continue end
 
 		local roboport = creeper.roboport
 		if roboport.logistic_network and roboport.logistic_network.valid then
-			--Check if powered and full energy
-			if roboport.prototype.electric_energy_source_prototype then
-				if roboport.prototype.electric_energy_source_prototype.buffer_capacity == roboport.energy then
-					creep(creeper)
-				end
-			else
-				--Checking fully powered status is much trickier for non-electric energy sources.
+			if is_roboport_fully_powered(roboport) then
 				creep(creeper)
 			end
 		end
@@ -61,34 +50,48 @@ function check_roboports()
 	end
 end
 
+function is_roboport_fully_powered(roboport)
+	if roboport.prototype.electric_energy_source_prototype then
+		return roboport.prototype.electric_energy_source_prototype.buffer_capacity == roboport.energy
+	end
+	return true -- Assume fully powered if not electric
+end
+
+function is_valid_creeper(creeper)
+	return creeper and creeper.roboport and creeper.roboport.valid and not creeper.off and creeper.surface
+end
+
+function remove_creeper(index)
+	table.remove(storage.creepers, index)
+	count_active_creepers()
+end
+
+function is_surface_disabled(surface_name)
+	if script.active_mods["space-age"] then
+		local disabled_surfaces = {
+			["nauvis"] = not settings.global["concreep-nauvis-enable"].value,
+			["gleba"] = not settings.global["concreep-gleba-enable"].value,
+			["fulgora"] = not settings.global["concreep-fulgora-enable"].value,
+			["vulcanus"] = not settings.global["concreep-vulcanus-enable"].value,
+			["aquilo"] = not settings.global["concreep-aquilo-enable"].value
+		}
+		return disabled_surfaces[surface_name]
+	end
+	return false
+end
+
 function get_creeper()
 	if storage.index > #storage.creepers then
 		storage.index = 1
 	end
+
 	local creeper = storage.creepers[storage.index]
-	if not (creeper.roboport and creeper.roboport.valid) or creeper.off or creeper.surface == nil then
-		if creeper.roboport and creeper.roboport.valid and creeper.off and creeper.removal_counter and creeper.removal_counter < 10 then
-			creeper.removal_counter = creeper.removal_counter + 1
-			return
-		end
-
-		--Roboport removed
-		table.remove(storage.creepers, storage.index)
-
-		count_active_creepers()
-
+	if not is_valid_creeper(creeper) then
+		remove_creeper(storage.index)
 		return
 	end
 
-	--Surface creeping disabled
-	if script.active_mods["space-age"] then
-		log("Checking roboport on surface " .. creeper.surface )
-		if creeper.surface == "nauvis" and not settings.global["concreep-nauvis-enable"].value then return end
-		if creeper.surface == "gleba" and not settings.global["concreep-gleba-enable"].value then return end
-		if creeper.surface == "fulgora" and not settings.global["concreep-fulgora-enable"].value then return end
-		if creeper.surface == "vulcanus" and not settings.global["concreep-vulcanus-enable"].value then return end
-		if creeper.surface == "aquilo" and not settings.global["concreep-aquilo-enable"].value then return end
-	end
+	if is_surface_disabled(creeper.surface) then return end
 
 	storage.index = storage.index + 1
 	return creeper
@@ -96,16 +99,21 @@ end
 
 function creep(creeper)
 	local roboport                    = creeper.roboport
+	local idle_bot_percentage_setting = settings.global["concreep-idle-bot-percentage"].value / 100
 
 	local available_bots              = roboport.logistic_network.available_construction_robots
 	local total_bots                  = roboport.logistic_network.all_construction_robots
 	local available_bot_percentage    = available_bots / total_bots
 
 	-- If we don't have enough idle bots, break out of this roboport here
-	local idle_bot_percentage_setting = settings.global["concreep-idle-bot-percentage"].value / 100
-	if (available_bot_percentage < idle_bot_percentage_setting) then
-		return
+	if (available_bot_percentage < idle_bot_percentage_setting) then return end
+
+	local base_radius = roboport.logistic_cell.construction_radius
+	if (settings.global["concreep-logistics-limit"].value) then
+		base_radius = roboport.logistic_cell.logistic_radius
 	end
+
+	local target_creep_radius        = base_radius  -- Store unadjusted target
 
 	local surface                    = roboport.surface
 	local force                      = roboport.force
@@ -113,14 +121,25 @@ function creep(creeper)
 
 	local minimum_item_count_setting = settings.global["concreep-minimum-item-count"].value
 	local concreep_range_setting     = settings.global["concreep-range"].value / 100
-	local area_tile_setting          = settings.global["concreep-tiles-per-area"].value
+	local tile_mode                  = settings.global["concreep-tile-mode"].value
+	local is_circular                = settings.global["concreep-circular-creep"].value
 
-	local target_creep_radius        = get_adjusted_radius(roboport.logistic_cell.construction_radius)
-	if (settings.global["concreep-logistics-limit"].value) then
-		target_creep_radius = get_adjusted_radius(roboport.logistic_cell.logistic_radius)
+	-- Switch to square mode if radius gets too large (to avoid 2000 tile search limit)
+	if is_circular and creeper.radius >= 43 then
+		creeper.force_square_mode = true
+	end
+
+	-- Use square mode if forced, otherwise use global setting
+	if creeper.force_square_mode then
+		is_circular = false
 	end
 
 	local current_radius  = math.min(creeper.radius, concreep_range_setting * target_creep_radius)
+
+	-- For circular mode, adjust the search radius to reach corners of the square area
+	if is_circular then
+		current_radius = get_adjusted_radius(current_radius)
+	end
 
 	-- Figure out how many bots to use for this creep. This is limited to no more than the number allowed to be working, and is further divided by the number of roboports in the network.
 	-- This keeps any individual port from pulling too much of the network's bots towards it all at once, reducing bot travel/migration.
@@ -138,6 +157,13 @@ function creep(creeper)
 		{ roboport.position.x + current_radius, roboport.position.y + current_radius }
 	}
 
+	-- Calculate the actual roboport construction area (for constraining tile placement)
+	local max_construction_radius = base_radius * concreep_range_setting
+	local construction_area = {
+		{ roboport.position.x - max_construction_radius, roboport.position.y - max_construction_radius },
+		{ roboport.position.x + max_construction_radius, roboport.position.y + max_construction_radius }
+	}
+
 	local in_space = false
 	if remote.interfaces["space-exploration"] then
 		in_space = "orbit" == remote.call("space-exploration", "get_surface_type", { surface_index = surface.index })
@@ -146,15 +172,18 @@ function creep(creeper)
 	local creep_data = {
 		position                   = roboport.position,
 		current_radius             = current_radius,
+		unadjusted_radius          = creeper.radius,  -- Store unadjusted for comparison
 		target_creep_radius        = target_creep_radius * concreep_range_setting,
 		usable_robots              = usable_robots,
 		area                       = area,
-		minimum_item_count_setting = minimum_item_count_setting
+		construction_area          = construction_area,
+		minimum_item_count_setting = minimum_item_count_setting,
+		is_circular                = is_circular
 	}
 
 	if in_space then
 		space_creep(creeper, creep_data)
-	elseif area_tile_setting then
+	elseif tile_mode == "coverage-type" then
 		area_tile_creep(creeper, creep_data)
 	else
 		standard_creep(creeper, creep_data)
@@ -173,6 +202,11 @@ function landfill_creep(creeper, creep_data)
 
 	local water_tiles  = surface.find_tiles_filtered(virgin_tile_filter)
 
+	-- If circular mode, filter to construction area
+	if creep_data.is_circular then
+		water_tiles = filter_tiles_to_construction_area(water_tiles, creep_data["construction_area"])
+	end
+
 	-- Wait for ghosts to finish building first.
 	if ghosts >= #water_tiles and ghosts > 0 then
 		return
@@ -181,6 +215,7 @@ function landfill_creep(creeper, creep_data)
 	local count          = 0
 	local landfill_count = math.max(0,
 									roboport.logistic_network.get_item_count("landfill") - creep_data["minimum_item_count_setting"])
+
 	local pump_radius = settings.global["concreep-pump-radius"].value
 
 	for i = #water_tiles, 1, -1 do
@@ -188,11 +223,11 @@ function landfill_creep(creeper, creep_data)
 			local pump_count = 0
 			if pump_radius > 0 then
 				pump_count = surface.count_entities_filtered { position = water_tiles[i].position, radius = pump_radius, name = "offshore-pump"}
-				pump_count = pump_count + surface.count_entities_filtered { position = water_tiles[i].position, radius = pump_radius, type = "entity-ghost", ghost_type = "offshore-pump"}
+				pump_count = pump_count + surface.count_entities_filtered { position = water_tiles[i].position, radius = pump_radius, type = "entity-ghost", ghost_name = "offshore-pump"}
 			end
 
 			if pump_count == 0 then
-				count = count + build_tile(roboport, "landfill", water_tiles[i].position)
+				count = count + build_tile(roboport, "landfill", water_tiles[i].position, creep_data["construction_area"])
 				creeper.removal_counter = 0
 			end
 		end
@@ -209,24 +244,20 @@ function standard_creep(creeper, creep_data)
 	end
 
 	local ghosts       = surface.count_entities_filtered { area = creep_data["area"], name = "tile-ghost", force = force }
-	local virgin_tile_filter = get_virgin_tile_filter(creep_data)
+	local virgin_tiles = get_landfill_and_virgin_tiles(surface, creep_data)
 
-	local virgin_tiles = surface.find_tiles_filtered(virgin_tile_filter)
-
-	if #virgin_tiles == 0 then
-		virgin_tile_filter.has_hidden_tile = true
-		virgin_tile_filter.name = "landfill"
-
-		virgin_tiles = surface.find_tiles_filtered(virgin_tile_filter)
-	end
+	-- Filter out tiles near agricultural towers
+	local agricultural_tower_radius = settings.global["concreep-agricultural-tower-radius"].value
+	virgin_tiles = filter_agricultural_tower_tiles(surface, virgin_tiles, agricultural_tower_radius)
 
 	-- Wait for ghosts to finish building first.
-	if ghosts >= #virgin_tiles and ghosts > 0 then
+	if #virgin_tiles > 0 and ghosts >= #virgin_tiles and ghosts > 0 then
 		return
 	end
 
 	local count                  = 0
 	local creep_brick_setting    = settings.global["creep-brick"].value
+	local tile_mode              = settings.global["concreep-tile-mode"].value
 
 	local refined_concrete_count = math.max(0,
 											roboport.logistic_network.get_item_count("refined-concrete") - creep_data["minimum_item_count_setting"])
@@ -240,7 +271,37 @@ function standard_creep(creeper, creep_data)
 	for i = #virgin_tiles, 1, -1 do
 		local ghost_type
 
-		if not creeper.pattern[(virgin_tiles[i].position.x - 2) % 4 + 1][(virgin_tiles[i].position.y - 2) % 4 + 1] then
+		-- Check if pattern mode is enabled and pattern exists
+		if tile_mode == "pattern" and creeper.pattern then
+			local pattern_size = creeper.pattern_size or 4  -- Default to 4 for backwards compatibility
+
+			-- Use stored offset for new roboports, or calculate for old ones
+			local offset_x, offset_y
+			if creeper.pattern_offset then
+				offset_x = creeper.pattern_offset[1]
+				offset_y = creeper.pattern_offset[2]
+			else
+				-- Backwards compatibility: calculate offset from roboport position
+				local half_size = pattern_size / 2
+				offset_x = math.floor(roboport.position.x - half_size)
+				offset_y = math.floor(roboport.position.y - half_size)
+			end
+
+			-- Calculate pattern indices based on tile position, wrapping around pattern size
+			local tile_x = math.floor(virgin_tiles[i].position.x)
+			local tile_y = math.floor(virgin_tiles[i].position.y)
+			local pattern_x = ((tile_x - offset_x) % pattern_size) + 1
+			local pattern_y = ((tile_y - offset_y) % pattern_size) + 1
+
+			if creeper.pattern[pattern_x] and creeper.pattern[pattern_x][pattern_y] then
+				if creeper.item[pattern_x] and creeper.item[pattern_x][pattern_y] and roboport.logistic_network.get_item_count(creeper.item[pattern_x][pattern_y]) > creep_data["minimum_item_count_setting"] then
+					ghost_type = creeper.pattern[pattern_x][pattern_y]
+				end
+			end
+		end
+
+		-- If pattern mode is disabled or no pattern tile found, use standard mode
+		if not ghost_type then
 			if count < refined_concrete_count then
 				ghost_type = "refined-concrete"
 			elseif count < concrete_count then
@@ -248,14 +309,10 @@ function standard_creep(creeper, creep_data)
 			elseif creep_brick_setting and count < brick_count then
 				ghost_type = "stone-path"
 			end
-		else
-			if roboport.logistic_network.get_item_count(creeper.item[(virgin_tiles[i].position.x - 2) % 4 + 1][(virgin_tiles[i].position.y - 2) % 4 + 1]) > creep_data["minimum_item_count_setting"] then
-				ghost_type = creeper.pattern[(virgin_tiles[i].position.x - 2) % 4 + 1][(virgin_tiles[i].position.y - 2) % 4 + 1]
-			end
 		end
 
 		if ghost_type then
-			count = count + build_tile(roboport, ghost_type, virgin_tiles[i].position)
+			count = count + build_tile(roboport, ghost_type, virgin_tiles[i].position, creep_data["construction_area"])
 		end
 
 		creeper.removal_counter = 0
@@ -293,6 +350,11 @@ function standard_creep(creeper, creep_data)
 
 			local upgradable_tiles = surface.find_tiles_filtered(upgradable_tiles_filter)
 
+			-- If circular mode, filter to construction area
+			if creep_data.is_circular then
+				upgradable_tiles = filter_tiles_to_construction_area(upgradable_tiles, creep_data["construction_area"])
+			end
+
 			for _, target_tile in pairs(upgradable_tiles) do
 				local tile_type = "refined-concrete"
 
@@ -304,7 +366,7 @@ function standard_creep(creeper, creep_data)
 					tile_type = "concrete"
 				end
 
-				count                   = count + build_tile(roboport, tile_type, target_tile.position)
+				count                   = count + build_tile(roboport, tile_type, target_tile.position, creep_data["construction_area"])
 				creeper.removal_counter = 0
 			end
 
@@ -318,35 +380,89 @@ function standard_creep(creeper, creep_data)
 	return false
 end
 
-function get_virgin_tile_filter(creep_data)
+function is_tile_in_area(tile_pos, area)
+	-- Tile positions are at the center of the tile.
+	-- Use >= for min bounds (top/left) and < for max bounds (bottom/right) to prevent off-by-one
+	return tile_pos.x >= area[1][1] and tile_pos.x < area[2][1] and
+	       tile_pos.y >= area[1][2] and tile_pos.y < area[2][2]
+end
+
+function filter_tiles_to_construction_area(tiles, construction_area)
+	if not construction_area then
+		return tiles
+	end
+
+	local filtered = {}
+	for _, tile in pairs(tiles) do
+		if is_tile_in_area(tile.position, construction_area) then
+			table.insert(filtered, tile)
+		end
+	end
+	return filtered
+end
+
+function get_landfill_and_virgin_tiles(surface, creep_data)
+	local is_circular = creep_data.is_circular  -- Cache the circular mode check
+
+	-- First, look for landfill tiles that need concreting
+	local landfill_filter = {
+		name = "landfill",
+		limit = creep_data["usable_robots"],
+		area = creep_data["area"]
+	}
+
+	if is_circular then
+		landfill_filter.position = creep_data.position
+		landfill_filter.radius = creep_data["current_radius"]
+		landfill_filter.area = nil  -- Remove area constraint from filter, we'll filter manually
+	end
+
+	local virgin_tiles = surface.find_tiles_filtered(landfill_filter)
+
+	-- If circular mode, filter to only tiles within construction area
+	if is_circular then
+		virgin_tiles = filter_tiles_to_construction_area(virgin_tiles, creep_data["construction_area"])
+	end
+
+	-- If no landfill tiles found, look for regular virgin tiles
+	if #virgin_tiles == 0 then
+		virgin_tiles = surface.find_tiles_filtered(get_virgin_tile_filter(creep_data))
+
+		-- If circular mode, filter those too
+		if is_circular then
+			virgin_tiles = filter_tiles_to_construction_area(virgin_tiles, creep_data["construction_area"])
+		end
+	end
+
+	return virgin_tiles
+end
+
+function get_tile_filter(creep_data, include_hidden_tile_check)
 	local filter = {
-		has_hidden_tile = false,
 		limit = creep_data["usable_robots"],
 		collision_mask = "ground_tile",
 		area = creep_data["area"]
 	}
 
-	if settings.global["concreep-circular-creep"].value then
+	if include_hidden_tile_check then
+		filter.has_hidden_tile = false
+	end
+
+	if creep_data.is_circular then
 		filter.position = creep_data.position
 		filter.radius = creep_data["current_radius"]
+		filter.area = nil  -- Remove area, we'll filter manually
 	end
 
 	return filter
 end
 
+function get_virgin_tile_filter(creep_data)
+	return get_tile_filter(creep_data, true)
+end
+
 function get_upgrade_tile_filter(creep_data)
-	local filter = {
-		limit = creep_data["usable_robots"],
-		collision_mask = "ground_tile",
-		area = creep_data["area"]
-	}
-
-	if settings.global["concreep-circular-creep"].value then
-		filter.position = creep_data.position
-		filter.radius = creep_data["current_radius"]
-	end
-
-	return filter
+	return get_tile_filter(creep_data, false)
 end
 
 function area_tile_creep(creeper, creep_data)
@@ -359,10 +475,14 @@ function area_tile_creep(creeper, creep_data)
 	end
 
 	local ghosts       = surface.count_entities_filtered({ area = creep_data["area"], name = "tile-ghost", force = force })
-	local virgin_tiles = surface.find_tiles_filtered(get_virgin_tile_filter(creep_data))
+	local virgin_tiles = get_landfill_and_virgin_tiles(surface, creep_data)
+
+	-- Filter out tiles near agricultural towers
+	local agricultural_tower_radius = settings.global["concreep-agricultural-tower-radius"].value
+	virgin_tiles = filter_agricultural_tower_tiles(surface, virgin_tiles, agricultural_tower_radius)
 
 	-- Wait for ghosts to finish building first.
-	if ghosts >= #virgin_tiles and ghosts > 0 then
+	if #virgin_tiles > 0 and ghosts >= #virgin_tiles and ghosts > 0 then
 		return
 	end
 
@@ -377,8 +497,8 @@ function area_tile_creep(creeper, creep_data)
 	end
 
 	if construction_area_tile == 'stone-brick' then
-        construction_area_tile      = "stone-path"
-    end
+		construction_area_tile      = "stone-path"
+	end
 
 	local minimum_item_count_setting  = settings.global["concreep-minimum-item-count"].value
 
@@ -415,7 +535,7 @@ function area_tile_creep(creeper, creep_data)
 		end
 
 		if ghost_type then
-			count = count + build_tile(roboport, ghost_type, virgin_tiles[i].position)
+			count = count + build_tile(roboport, ghost_type, virgin_tiles[i].position, creep_data["construction_area"])
 		end
 
 		creeper.removal_counter = 0
@@ -462,7 +582,7 @@ function space_creep(creeper, creep_data)
 		end
 
 		if ghost_type then
-			count = count + build_tile(roboport, ghost_type, virgin_tiles[i].position)
+			count = count + build_tile(roboport, ghost_type, virgin_tiles[i].position, creep_data["construction_area"])
 		end
 
 		creeper.removal_counter = 0
@@ -489,9 +609,15 @@ function space_creep(creeper, creep_data)
 				upgradable_tiles_filter.limit = math.min(math.max(space_tile_count, 0), creep_data["usable_robots"])
 
 				local upgradable_tiles = surface.find_tiles_filtered(upgradable_tiles_filter)
+
+				-- If circular mode, filter to construction area
+				if creep_data.is_circular then
+					upgradable_tiles = filter_tiles_to_construction_area(upgradable_tiles, creep_data["construction_area"])
+				end
+
 				for _, target_tile in pairs(upgradable_tiles) do
 					local tile_type         = "se-space-platform-plating"
-					count                   = count + build_tile(roboport, tile_type, target_tile.position)
+					count                   = count + build_tile(roboport, tile_type, target_tile.position, creep_data["construction_area"])
 					creeper.removal_counter = 0
 				end
 
@@ -506,79 +632,190 @@ function space_creep(creeper, creep_data)
 	return false
 end
 
-function area_tile_sleep_check(creeper, creep_data)
+function sleep_check(creeper, creep_data, upgrade_target_types, virgin_tile_check_filter)
 	local roboport = creeper.roboport
 	local surface  = roboport.surface
 
-	if surface.count_tiles_filtered(get_virgin_tile_filter(creep_data)) == 0 then
-		if creep_data["current_radius"] < creep_data["target_creep_radius"] then
-			creeper.radius = math.min(creeper.radius + 1, get_adjusted_radius(roboport.logistic_cell.construction_radius))
+	-- Check if there are any virgin tiles left using provided filter (or default)
+	local virgin_count
+	if virgin_tile_check_filter then
+		virgin_count = surface.count_tiles_filtered(virgin_tile_check_filter)
+	else
+		local virgin_tiles = surface.find_tiles_filtered(get_virgin_tile_filter(creep_data))
+		-- If circular mode, filter to construction area
+		if creep_data.is_circular and creep_data["construction_area"] then
+			virgin_tiles = filter_tiles_to_construction_area(virgin_tiles, creep_data["construction_area"])
+		end
+		-- Exclude tiles protected by agricultural towers to avoid getting stuck when only blocked tiles remain
+		local agricultural_tower_radius = settings.global["concreep-agricultural-tower-radius"].value
+		virgin_tiles = filter_agricultural_tower_tiles(surface, virgin_tiles, agricultural_tower_radius)
+		virgin_count = #virgin_tiles
+	end
+
+	if virgin_count == 0 then
+		-- Compare unadjusted radius against target (both are square radii)
+		local radius_to_compare = creep_data.unadjusted_radius or creep_data["current_radius"]
+		if radius_to_compare < creep_data["target_creep_radius"] then
+			-- Expand radius (but don't exceed the target)
+			creeper.radius = math.min(creeper.radius + 1, creep_data["target_creep_radius"])
 		else
-			creeper.off             = true
-			creeper.removal_counter = 1
-			storage.active_creepers  = storage.active_creepers - 1
+			-- Check if there are upgrades to do
+			local switch = true
+			if upgrade_target_types and #upgrade_target_types > 0 and surface.count_tiles_filtered { name = upgrade_target_types, area = creep_data["area"], limit = 1 } > 0 then
+				switch = false
+			end
+
+			if switch then
+				-- No more work, put creeper to sleep
+				creeper.off             = true
+				creeper.removal_counter = 1
+				storage.active_creepers = storage.active_creepers - 1
+			else
+				-- Switch to upgrade mode
+				creeper.radius  = 3
+				creeper.upgrade = true
+			end
 		end
 	end
+end
+
+function area_tile_sleep_check(creeper, creep_data)
+	sleep_check(creeper, creep_data, nil, nil)
 end
 
 function standard_sleep_check(creeper, creep_data, upgrade_target_types)
-	local roboport = creeper.roboport
-	local surface  = roboport.surface
-
-	if surface.count_tiles_filtered(get_virgin_tile_filter(creep_data)) == 0 then
-		if creep_data["current_radius"] < creep_data["target_creep_radius"] then
-			creeper.radius = math.min(creeper.radius + 1, get_adjusted_radius(roboport.logistic_cell.construction_radius))
-		else
-			local switch = true
-
-			if #upgrade_target_types > 0 and surface.count_tiles_filtered { name = upgrade_target_types, area = creep_data["area"], limit = 1 } > 0 then
-				switch = false
-			end
-			if switch then
-				creeper.off             = true
-				creeper.removal_counter = 1
-				storage.active_creepers  = storage.active_creepers - 1
-			else
-				creeper.radius  = 3 --Reset radius and switch to upgrade mode.
-				creeper.upgrade = true
-			end
-		end
-	end
+	sleep_check(creeper, creep_data, upgrade_target_types, nil)
 end
 
 function space_sleep_check(creeper, creep_data, upgrade_target_types)
-	local roboport = creeper.roboport
-	local surface  = roboport.surface
+	sleep_check(creeper, creep_data, upgrade_target_types, { area = creep_data["area"], name = "se-space", collision_mask = "empty_space" })
+end
 
-	if surface.count_tiles_filtered { area = creep_data["area"], name="se-space", collision_mask = "empty_space" } == 0 then
-		if creep_data["current_radius"] < creep_data["target_creep_radius"] then
-			creeper.radius = math.min(creeper.radius + 1, get_adjusted_radius(roboport.logistic_cell.construction_radius))
-		else
-			local switch = true
+function filter_agricultural_tower_tiles(surface, tiles, base_radius)
+	-- Fast-paths and guards
+	if base_radius == 0 or not (prototypes and prototypes.entity and prototypes.entity["agricultural-tower"]) then
+		return tiles
+	end
+	if not tiles or #tiles == 0 then
+		return tiles
+	end
 
-			if #upgrade_target_types > 0 and surface.count_tiles_filtered { name = upgrade_target_types, area = creep_data["area"], limit = 1 } > 0 then
-				switch = false
+	-- Build a bounding box around provided tiles and query nearby towers once
+	local min_x, min_y = math.huge, math.huge
+	local max_x, max_y = -math.huge, -math.huge
+	for i = 1, #tiles do
+		local p = tiles[i].position
+		if p.x < min_x then min_x = p.x end
+		if p.y < min_y then min_y = p.y end
+		if p.x > max_x then max_x = p.x end
+		if p.y > max_y then max_y = p.y end
+	end
+	local pad = base_radius * 2 + 1
+	local area = { { min_x - pad, min_y - pad }, { max_x + pad, max_y + pad } }
+
+	local towers = surface.find_entities_filtered { area = area, name = "agricultural-tower" }
+	local ghost_towers = surface.find_entities_filtered { area = area, type = "entity-ghost", ghost_name = "agricultural-tower" }
+
+	-- If no towers nearby, nothing to filter
+	if (#towers == 0) and (#ghost_towers == 0) then
+		return tiles
+	end
+
+	-- Build a compact list of tower centers with effective square radii
+	local all = {}
+	for _, t in pairs(towers) do
+		local r = base_radius
+		if t.quality and t.quality.level then
+			r = base_radius + (t.quality.level * 2)
+		end
+		all[#all + 1] = { x = t.position.x, y = t.position.y, r = r }
+	end
+	for _, g in pairs(ghost_towers) do
+		local r = base_radius
+		if g.ghost_quality and g.ghost_quality.level then
+			r = base_radius + (g.ghost_quality.level * 2)
+		end
+		all[#all + 1] = { x = g.position.x, y = g.position.y, r = r }
+	end
+
+	local filtered = {}
+	for i = 1, #tiles do
+		local p = tiles[i].position
+		local px = math.floor(p.x) + 0.5
+		local py = math.floor(p.y) + 0.5
+		local near = false
+		for j = 1, #all do
+			local dx = px - all[j].x
+			local dy = py - all[j].y
+			-- Square (Chebyshev) distance check to match is_near_agricultural_tower
+			if math.max(math.abs(dx), math.abs(dy)) < all[j].r then
+				near = true
+				break
 			end
-			if switch then
-				creeper.off             = true
-				creeper.removal_counter = 1
-				storage.active_creepers  = storage.active_creepers - 1
-			else
-				creeper.radius  = 3 --Reset radius and switch to upgrade mode.
-				creeper.upgrade = true
+		end
+		if not near then
+			filtered[#filtered + 1] = tiles[i]
+		end
+	end
+	return filtered
+end
+
+function is_near_agricultural_tower(surface, position, base_radius)
+	if base_radius > 0 and prototypes.entity["agricultural-tower"] then
+		-- Use tile center for distance calculations to avoid off-by-one allowing placements too close
+		local px = math.floor(position.x) + 0.5
+		local py = math.floor(position.y) + 0.5
+		-- Check for actual towers first
+		local towers = surface.find_entities_filtered { position = position, radius = base_radius * 2, name = "agricultural-tower" }
+		for _, tower in pairs(towers) do
+			local tower_radius = base_radius
+			-- Adjust radius based on quality if available
+			if tower.quality and tower.quality.level then
+				-- Quality levels: 0=normal, 1=uncommon, 2=rare, 3=epic, 4=legendary
+				-- Each quality level increases working area, so increase our clearance
+				tower_radius = base_radius + (tower.quality.level * 2)
+			end
+			-- Check if position is within this tower's square radius (axis-aligned)
+			local dx = px - tower.position.x
+			local dy = py - tower.position.y
+			if math.max(math.abs(dx), math.abs(dy)) < tower_radius then
+				return true
+			end
+		end
+
+		-- Check for ghost towers
+		local ghost_towers = surface.find_entities_filtered { position = position, radius = base_radius * 2, type = "entity-ghost", ghost_name = "agricultural-tower" }
+		for _, ghost in pairs(ghost_towers) do
+			local tower_radius = base_radius
+			-- Check ghost quality if available
+			if ghost.ghost_quality and ghost.ghost_quality.level then
+				tower_radius = base_radius + (ghost.ghost_quality.level * 2)
+			end
+			-- Use tile center for consistency with real tower check; axis-aligned square radius
+			local dx = px - ghost.position.x
+			local dy = py - ghost.position.y
+			if math.max(math.abs(dx), math.abs(dy)) < tower_radius then
+				return true
 			end
 		end
 	end
+	return false
 end
 
-function build_tile(roboport, type, position)
+function build_tile(roboport, type, position, construction_area)
 	local count   = 0;
 	local surface = roboport.surface
 	local force   = roboport.force
 
+	-- can_place_entity checks for conflicts, so we don't need a separate ghost check
+	-- This is much faster than doing find_entities_filtered for every tile
 	if surface.can_place_entity { name = "tile-ghost", position = position, inner_name = type, force = force } then
-		surface.create_entity { name = "tile-ghost", position = position, inner_name = type, force = force, expires = false }
-		count = count + 1
+		local created = surface.create_entity { name = "tile-ghost", position = position, inner_name = type, force = force, expires = false }
+		if created then
+			count = count + 1
+		else
+			return count
+		end
 	else
 		return count
 	end
@@ -587,23 +824,32 @@ function build_tile(roboport, type, position)
 
 	if settings.global["concreep-clear-trees"].value then
 		for _, tree in pairs(surface.find_entities_filtered { type = "tree", area = tree_area }) do
-			tree.order_deconstruction(roboport.force)
-			count = count + 1
+			-- Check if tree center is within construction area
+			if not construction_area or is_tile_in_area(tree.position, construction_area) then
+				tree.order_deconstruction(roboport.force)
+				count = count + 1
+			end
 		end
 	end
 
 	if settings.global["concreep-clear-rocks"].value then
 		for _, rock in pairs(surface.find_entities_filtered { type = "simple-entity", area = tree_area }) do
-			rock.order_deconstruction(roboport.force)
-			count = count + 1
+			-- Check if rock center is within construction area
+			if not construction_area or is_tile_in_area(rock.position, construction_area) then
+				rock.order_deconstruction(roboport.force)
+				count = count + 1
+			end
 		end
 	end
 
 	if settings.global["concreep-clear-cliffs"].value then
 		for _, cliff in pairs(surface.find_entities_filtered { type = "cliff", limit = 1, area = tree_area }) do
 			if roboport.logistic_network.get_item_count("cliff-explosives") > 0 then
-				cliff.order_deconstruction(roboport.force)
-				count = count + 1
+				-- Check if cliff center is within construction area
+				if not construction_area or is_tile_in_area(cliff.position, construction_area) then
+					cliff.order_deconstruction(roboport.force)
+					count = count + 1
+				end
 			end
 		end
 	end
@@ -632,24 +878,38 @@ end
 
 function addPort(roboport)
 	local surface = roboport.surface
+	local pattern_size = settings.global["concreep-pattern-size"].value
+	local half_size = pattern_size / 2
+
+	-- Calculate pattern bounds to match visualization
+	local pos = roboport.position
+	local left = math.floor(pos.x - half_size)
+	local top = math.floor(pos.y - half_size)
+	local right = math.floor(pos.x + half_size)
+	local bottom = math.floor(pos.y + half_size)
 
 	-- Capture the pattern the roboport sits on.
 	local pattern = {}
 	local it      = {}
-	for xx = -2, 1, 1 do
-		pattern[xx + 3] = {}
-		it[xx + 3]      = {}
-		--for yy = -2, 1, 1 do
-		--	local tile = surface.get_tile(roboport.position.x + xx, roboport.position.y + yy)
-		--	if (tile.hidden_tile and tile.prototype.items_to_place_this) and not (tile.name == "stone-path" or tile.name == "concrete" or tile.name == "refined-concrete") then
-		--		it[xx + 3][yy + 3]      = tile.prototype.items_to_place_this[1] and game.item_prototypes[tile.prototype.items_to_place_this[1].name] and tile.prototype.items_to_place_this[1].name
-		--		pattern[xx + 3][yy + 3] = tile.name
-		--	end
-		--end
+
+	local idx = 1
+	for xx = left, right - 1, 1 do
+		pattern[idx] = {}
+		it[idx] = {}
+		local idy = 1
+		for yy = top, bottom - 1, 1 do
+			local tile = surface.get_tile(xx, yy)
+			if tile.hidden_tile and tile.prototype.items_to_place_this then
+				it[idx][idy] = tile.prototype.items_to_place_this[1] and prototypes.item[tile.prototype.items_to_place_this[1].name] and tile.prototype.items_to_place_this[1].name
+				pattern[idx][idy] = tile.name
+			end
+			idy = idy + 1
+		end
+		idx = idx + 1
 	end
 
 	table.insert(storage.creepers,
-				 { roboport = roboport, surface = surface.name, radius = 3, pattern = pattern, item = it, off = false, removal_counter = 0 })
+				 { roboport = roboport, surface = surface.name, radius = 3, pattern = pattern, item = it, pattern_size = pattern_size, pattern_offset = {left, top}, off = false, removal_counter = 0 })
 end
 
 function count_active_creepers()
@@ -683,3 +943,28 @@ script.on_event(
 script.on_nth_tick(settings.startup["concreep-update-frequency"].value * 60, check_roboports)
 script.on_init(init)
 script.on_configuration_changed(init)
+
+-- Console command to wake up all roboports
+commands.add_command("concreep-wake", "Wake up all sleeping roboports", function(event)
+	if not storage.creepers then
+		game.print("Concreep not initialized yet.")
+		return
+	end
+
+	local woken = 0
+	for i = 1, #storage.creepers do
+		if storage.creepers[i].off then
+			storage.creepers[i].off = false
+			storage.creepers[i].removal_counter = 0
+			woken = woken + 1
+		end
+	end
+
+	count_active_creepers()
+
+	if event.player_index then
+		game.get_player(event.player_index).print("Woke up " .. woken .. " sleeping roboports. Active: " .. storage.active_creepers)
+	else
+		game.print("Woke up " .. woken .. " sleeping roboports. Active: " .. storage.active_creepers)
+	end
+end)

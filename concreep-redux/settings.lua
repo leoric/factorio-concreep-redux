@@ -71,6 +71,46 @@ data:extend({
         order = "037"
     },
     {
+        type = "int-setting",
+        name = "concreep-agricultural-tower-radius",
+        setting_type = "runtime-global",
+        default_value = 11,
+        minimum_value = 11,
+        order = "038"
+    },
+    {
+        type = "string-setting",
+        name = "concreep-tile-mode",
+        setting_type = "runtime-global",
+        default_value = "standard",
+        allowed_values = {"standard", "pattern", "coverage-type"},
+        order = "039"
+    },
+    {
+        type = "bool-setting",
+        name = "concreep-use-pattern-mode",
+        setting_type = "runtime-global",
+        default_value = false,
+        hidden = true,
+        order = "039a"
+    },
+    {
+        type = "int-setting",
+        name = "concreep-pattern-size",
+        setting_type = "runtime-global",
+        default_value = 4,
+        minimum_value = 3,
+        maximum_value = 16,
+        order = "040"
+    },
+    {
+        type = "bool-setting",
+        name = "concreep-show-pattern-preview",
+        setting_type = "runtime-per-user",
+        default_value = true,
+        order = "041"
+    },
+    {
         type = "bool-setting",
         name = "creep-brick",
         setting_type = "runtime-global",
@@ -103,6 +143,7 @@ data:extend({
         name = "concreep-tiles-per-area",
         setting_type = "runtime-global",
         default_value = false,
+        hidden = true,
         order = "080"
     },
     {
