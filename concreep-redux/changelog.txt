@@ -1,4 +1,35 @@
 ---------------------------------------------------------------------------------------------------
+Version: 3.1.0
+Date: 2025/10/11
+  Added:
+    - New unified Tile Placement Mode setting with three options: Standard, Pattern, and Coverage Type
+    - Pattern tiling mode now fully functional - captures and replicates tile patterns from under roboports
+    - Configurable pattern sizes from 3x3 to 16x16 (supports both odd and even sizes)
+    - Visual pattern preview: cyan rectangle shows captured pattern area when hovering over roboports in Pattern mode (toggleable per-user setting)
+    - Setting for agricultural tower clearance radius (default 11, minimum 11)
+    - Agricultural tower clearance now checks tower quality and adjusts radius accordingly (+2 tiles per quality level)
+    - Console command /concreep-wake to wake up all sleeping roboports
+    - Automatic mode switching: circular mode switches to square mode at radius 43 to avoid 2000 tile search limit
+  Changes:
+    - Fixed circular creep radius expansion to properly reach corners of construction area
+    - Fixed pattern tiling to center correctly on roboport position and align with tile grid
+    - Fixed boundary checks for trees, rocks, and cliffs marked for deconstruction - now only marks entities within roboport construction range
+    - Fixed landfill prioritization to concrete landfill before expanding further
+    - Improved API compatibility with Factorio 2.0 (prototypes.X instead of game.X_prototypes)
+    - Agricultural tower check now properly prevents all tile types (not just landfill) from being placed too close
+  Bugfixes:
+    - Agricultural towers no longer cause roboports to stall: sleep_check now excludes tower-protected tiles when deciding to expand or sleep, so creepers continue working outside the protected area.
+    - Prevent paving the corners near towers by switching proximity logic to a square (Chebyshev) radius around towers and ghost towers.
+    - Use tile-center coordinates for proximity checks to avoid off-by-one placement near tower edges.
+  Optimizations:
+    - Consolidated duplicate sleep_check code (~115 lines saved)
+    - Cached settings to reduce repeated lookups
+    - Removed expensive entity searches
+    - Reduced per-tile entity searches near towers by batching tower/ghost queries once per batch and using arithmetic checks per tile in filter_agricultural_tower_tiles
+  Migration:
+    - Old tile mode settings (concreep-use-pattern-mode and concreep-tiles-per-area) automatically migrated to new unified setting
+
+---------------------------------------------------------------------------------------------------
 Version: 3.0.3
 Date: 2024/11/03
   Added:
