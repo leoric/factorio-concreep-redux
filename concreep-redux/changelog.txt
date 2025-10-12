@@ -4,6 +4,7 @@ Date: TBD
   Added:
   Changes:
   Bugfixes:
+    - Fixed infinite log spam on space platform surfaces by filtering out surfaces starting with "platform-" (Issue #41)
   Optimizations:
 
 ---------------------------------------------------------------------------------------------------

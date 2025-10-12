@@ -100,6 +100,14 @@ function remove_creeper(index)
 end
 
 function is_surface_disabled(surface_name)
+	-- Filter out space platform surfaces using the surface.platform property
+	-- This is more reliable than pattern matching and works with Space Age or mods like Lyra Robots in Space
+	local surface = game.surfaces[surface_name]
+	if surface and surface.platform then
+		return true  -- This surface is associated with a space platform, don't process it
+	end
+
+	-- Check Space Age planet-specific settings
 	if script.active_mods["space-age"] then
 		local disabled_surfaces = {
 			["nauvis"] = not settings.global["concreep-nauvis-enable"].value,
