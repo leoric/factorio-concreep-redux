@@ -649,33 +649,60 @@ function space_creep(creeper, creep_data)
 
 	local ghosts       = surface.count_entities_filtered { area = creep_data["area"], name = "tile-ghost", force = force }
 
-	local virgin_tile_filter = get_virgin_tile_filter(creep_data)
-	virgin_tile_filter.name = "se-space"
-	local virgin_tiles = surface.find_tiles_filtered(virgin_tile_filter)
-
-	-- Wait for ghosts to finish building first.
-	if ghosts >= #virgin_tiles and ghosts > 0 then
-		return
-	end
-
-	local count                = 0
-
 	local space_scaffold_count = math.max(0,
 										  roboport.logistic_network.get_item_count("se-space-platform-scaffold") - creep_data["minimum_item_count_setting"])
 	local space_tile_count     = math.max(0,
 										  roboport.logistic_network.get_item_count("se-space-platform-plating") - creep_data["minimum_item_count_setting"])
 
-	for i = #virgin_tiles, 1, -1 do
+	-- Two-phase search, similar to landfill_creep:
+	-- Phase 1: Prioritize empty space (se-space) tiles - can place both plating and scaffolding
+	-- Phase 2: Process asteroid (se-asteroid) tiles - can only place plating
+	-- This prevents the API limit from being exhausted by nearby asteroids before reaching distant empty space.
+	
+	-- Phase 1: Search for empty space tiles (se-space)
+	-- Don't use get_virgin_tile_filter because it includes collision_mask="ground_tile"
+	-- which doesn't match space tiles. Build a custom filter for space.
+	local space_tile_filter = {
+		name = "se-space",
+		limit = creep_data["usable_robots"],
+		area = creep_data["area"]
+	}
+	
+	-- Override with position/radius if circular mode (matching get_tile_filter pattern)
+	if creep_data.is_circular then
+		space_tile_filter.position = creep_data.position
+		space_tile_filter.radius = creep_data["current_radius"]
+		space_tile_filter.area = nil  -- Remove area, we'll filter manually
+	end
+	
+	local space_tiles = surface.find_tiles_filtered(space_tile_filter)
+	
+	-- If circular mode, filter to construction area
+	if creep_data.is_circular then
+		space_tiles = filter_tiles_to_construction_area(space_tiles, creep_data["construction_area"])
+	end
+
+	-- Wait for ghosts to finish building first.
+	if ghosts >= #space_tiles and ghosts > 0 then
+		return
+	end
+
+	local count = 0
+
+	-- Process empty space tiles - can place both plating and scaffolding
+	for i = #space_tiles, 1, -1 do
 		local ghost_type
+		local tile_position = space_tiles[i].position
 
 		if count < space_tile_count then
 			ghost_type = "se-space-platform-plating"
 		elseif count < space_scaffold_count then
+			-- Scaffolding can be placed on empty space
 			ghost_type = "se-space-platform-scaffold"
 		end
 
 		if ghost_type then
-			count = count + build_tile(roboport, ghost_type, virgin_tiles[i].position, creep_data["construction_area"])
+			count = count + build_tile(roboport, ghost_type, tile_position, creep_data["construction_area"])
 		end
 
 		creeper.removal_counter = 0
@@ -683,6 +710,41 @@ function space_creep(creeper, creep_data)
 
 	if count >= creep_data["usable_robots"] then
 		return true
+	end
+
+	-- Phase 2: If no empty space tiles, search for asteroid tiles (se-asteroid)
+	-- Only place plating on asteroids, never scaffolding
+	if #space_tiles == 0 then
+		local asteroid_tile_filter = {
+			name = "se-asteroid",
+			limit = creep_data["usable_robots"],
+			area = creep_data["area"]
+		}
+		
+		if creep_data.is_circular then
+			asteroid_tile_filter.position = creep_data.position
+			asteroid_tile_filter.radius = creep_data["current_radius"]
+			asteroid_tile_filter.area = nil
+		end
+		
+		local asteroid_tiles = surface.find_tiles_filtered(asteroid_tile_filter)
+		
+		if creep_data.is_circular then
+			asteroid_tiles = filter_tiles_to_construction_area(asteroid_tiles, creep_data["construction_area"])
+		end
+
+		-- Process asteroid tiles - can only place plating
+		for i = #asteroid_tiles, 1, -1 do
+			if count < space_tile_count then
+				local tile_position = asteroid_tiles[i].position
+				count = count + build_tile(roboport, "se-space-platform-plating", tile_position, creep_data["construction_area"])
+				creeper.removal_counter = 0
+			end
+		end
+
+		if count >= creep_data["usable_robots"] then
+			return true
+		end
 	end
 
 	creep_data["usable_robots"] = creep_data["usable_robots"] - count
@@ -788,7 +850,63 @@ function standard_sleep_check(creeper, creep_data, upgrade_target_types)
 end
 
 function space_sleep_check(creeper, creep_data, upgrade_target_types)
-	sleep_check(creeper, creep_data, upgrade_target_types, { area = creep_data["area"], name = "se-space", collision_mask = "empty_space" })
+	-- Space tiling uses two-phase search: se-space first (can place plating/scaffolding), then se-asteroid (plating only)
+	-- Allow radius expansion if all se-space tiles are filled, even if asteroids remain but plating is unavailable
+	local roboport = creeper.roboport
+	local surface  = roboport.surface
+	
+	-- Check for empty space (se-space) tiles first
+	local space_tile_count = surface.count_tiles_filtered({ area = creep_data["area"], name = "se-space" })
+	
+	-- If there are still empty space tiles, don't expand yet
+	if space_tile_count > 0 then
+		return
+	end
+	
+	-- All empty space is filled. Now check if we should expand based on asteroids.
+	-- Check if plating is available
+	local space_tile_count_available = math.max(0,
+		roboport.logistic_network.get_item_count("se-space-platform-plating") - creep_data["minimum_item_count_setting"])
+	
+	-- If plating is available, check for asteroid tiles before expanding
+	local virgin_count = 0
+	if space_tile_count_available > 0 then
+		virgin_count = surface.count_tiles_filtered({ area = creep_data["area"], name = "se-asteroid" })
+	end
+	-- If no plating available, virgin_count stays 0, allowing radius expansion
+	
+	if virgin_count == 0 then
+		-- Compare unadjusted radius against target (both are square radii)
+		local radius_to_compare = creep_data.unadjusted_radius or creep_data["current_radius"]
+		if radius_to_compare < creep_data["target_creep_radius"] then
+			-- Expand radius (but don't exceed the target)
+			creeper.radius = math.min(creeper.radius + 1, creep_data["target_creep_radius"])
+		else
+			-- Check if there are upgrades to do
+			local switch = true
+			if upgrade_target_types and #upgrade_target_types > 0 then
+				local upgrade_tiles = surface.find_tiles_filtered { name = upgrade_target_types, area = creep_data["area"], limit = 1 }
+				-- If circular mode, filter to construction area
+				if creep_data.is_circular and creep_data["construction_area"] then
+					upgrade_tiles = filter_tiles_to_construction_area(upgrade_tiles, creep_data["construction_area"])
+				end
+				if #upgrade_tiles > 0 then
+					switch = false
+				end
+			end
+
+			if switch then
+				-- No more work, put creeper to sleep
+				creeper.off             = true
+				creeper.removal_counter = 1
+				storage.active_creepers = storage.active_creepers - 1
+			else
+				-- Switch to upgrade mode
+				creeper.radius  = 3
+				creeper.upgrade = true
+			end
+		end
+	end
 end
 
 function filter_agricultural_tower_tiles(surface, tiles, base_radius)
