@@ -31,11 +31,16 @@ function check_roboports()
 		return
 	end
 
-	-- If very few roboports are active, randomly wake up some sleeping ones to recheck
-	-- This handles cases where upgrades become available or new tiles are added
+	-- If fewer roboports are active than the per-tick processing quota, wake up sleeping ones
+	-- This ensures we always have enough active roboports to fill the processing capacity
+	-- Recalculate active count to respect current surface filter settings
+	count_active_creepers()
+
+	local max_creepers = settings.global["concreep-update-count"].value
 	local total_creepers = #storage.creepers
-	if total_creepers > 0 and storage.active_creepers < math.max(5, total_creepers * 0.05) then
-		-- Wake up 1-3 random sleeping roboports
+
+	if total_creepers > 0 and storage.active_creepers < max_creepers then
+		-- Build list of sleeping roboport indices
 		local sleeping_indices = {}
 		for i = 1, total_creepers do
 			if storage.creepers[i].off then
@@ -44,19 +49,22 @@ function check_roboports()
 		end
 
 		if #sleeping_indices > 0 then
-			local to_wake = math.min(3, #sleeping_indices)
+			-- Wake up enough to reach the quota (or all sleeping ports, whichever is less)
+			local needed = max_creepers - storage.active_creepers
+			local to_wake = math.min(needed, #sleeping_indices)
+
 			for i = 1, to_wake do
 				local random_index = math.random(1, #sleeping_indices)
 				local creeper_index = sleeping_indices[random_index]
 				storage.creepers[creeper_index].off = false
 				storage.creepers[creeper_index].removal_counter = 0
+				storage.creepers[creeper_index].radius = 3  -- Reset radius to start scanning from the beginning
+				storage.creepers[creeper_index].upgrade = false  -- Clear upgrade mode
 				table.remove(sleeping_indices, random_index)
 			end
 			count_active_creepers()
 		end
 	end
-
-	local max_creepers = settings.global["concreep-update-count"].value
 
 	for i = 1, max_creepers do
 		if i > #storage.creepers then return end
@@ -1072,7 +1080,8 @@ function count_active_creepers()
 	storage.active_creepers = 0
 
 	for i = #storage.creepers, 1, -1 do
-		if storage.creepers[i].off == false then
+		-- Only count creepers that are awake AND on enabled surfaces
+		if storage.creepers[i].off == false and not is_surface_disabled(storage.creepers[i].surface) then
 			storage.active_creepers = storage.active_creepers + 1
 		end
 	end

@@ -28,6 +28,8 @@ commands.add_command("concreep-wake", "Wake up all sleeping roboports", function
 		if storage.creepers[i].off then
 			storage.creepers[i].off = false
 			storage.creepers[i].removal_counter = 0
+			storage.creepers[i].radius = 3  -- Reset radius to start scanning from the beginning
+			storage.creepers[i].upgrade = false  -- Clear upgrade mode
 			woken = woken + 1
 		end
 	end
