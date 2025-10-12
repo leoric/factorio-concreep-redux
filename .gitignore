@@ -138,3 +138,6 @@ luac.out
 
 
 # End of https://www.toptal.com/developers/gitignore/api/intellij+all,lua
+
+# Claude Code local settings
+.claude/settings.local.json

@@ -98,17 +98,30 @@ concreep-redux/
 - `addPort(roboport)` - Registers new roboport as creeper
 - `get_adjusted_radius()` - Converts square to circular radius if needed
 
+## Building
+
+To create a release zip file, run the PowerShell build script:
+
+```powershell
+powershell.exe -File "F:\Factorio Mod Development\concreep-redux\build.ps1"
+```
+
+This creates `concreep-redux_X.Y.Z.zip` where X.Y.Z is the version from `info.json`.
+
+**Important:** On Windows systems, use `powershell.exe` (not `pwsh`) to run the build script.
+
 ## Testing
 
 No automated test suite. Testing is done manually in Factorio:
-1. Copy `concreep-redux/` folder to Factorio mods directory
+1. Copy `concreep-redux/` folder to Factorio mods directory (or install the built zip)
 2. Launch Factorio, enable the mod
 3. Start/load a game with roboports and construction robots
 4. Observe tile placement behavior
 
 To test specific features:
 - Enable/disable settings in game settings menu (Options → Mod Settings)
-- Use console commands to manipulate storage: `/c storage.creepers`
+- Use console commands: `/concreep-help`, `/concreep-status`, `/concreep-rebuild`, `/concreep-wake`
+- Use debug commands to manipulate storage: `/c storage.creepers`
 - Enable the `gvv` mod for advanced debugging
 
 ## Mod Compatibility
@@ -120,16 +133,27 @@ To test specific features:
 
 **Settings-updates.lua** conditionally hides settings based on active mods.
 
-## Common Issues
+## Recent Updates (v3.2.0)
 
-**Agricultural Tower Radius Bug (line 148, 204, 206):**
-The code references `concreep-agricultural-tower-radius` setting which doesn't exist in settings.lua. This will cause nil errors. The setting needs to be added or the references removed.
+**Roboport GUI:**
+`gui/config_window.lua` now has a functional sidebar GUI that displays when opening roboports. Shows status (active/sleeping/upgrading/waiting), radius progress, tile mode, and countdown timers for pattern mode delays.
 
-**Commented GUI Code:**
-The entire GUI system in `gui/config_window.lua` is commented out. The custom input keybind (CTRL+J) is registered but does nothing.
+**Pattern Mode Improvements:**
+- Pattern capture now detects tile ghosts in addition to placed tiles
+- New roboports in pattern mode wait 30 seconds before starting, giving time to place patterns
+- Patterns are automatically re-captured 5 seconds before activation
+- Setting changes (enabling pattern mode or changing size) trigger automatic re-capture
 
-**Pattern System Unused:**
-Lines 652-664 in `addPort()` set up a pattern capture system but the loops are commented out, so patterns are always empty 4x4 tables.
+**Console Commands:**
+New commands in `logic/commands.lua`:
+- `/concreep-help` - Show available commands
+- `/concreep-status` - Display detailed status by surface
+- `/concreep-rebuild` - Rebuild roboport list from scratch
+- `/concreep-wake` - Wake all sleeping roboports
 
-**Virgin Tiles with Landfill (line 232-235):**
-The code filters for virgin tiles, and if none found, switches to look for landfill with hidden tiles. The logic for detecting when to place over landfill may not work as intended.
+**Bug Fixes:**
+- Sleep mode now works correctly in circular mode
+- Surface filtering no longer causes infinite loops
+- Sleeping roboports are preserved (not deleted)
+- GUI updates wrapped in pcall to prevent freezes
+- Auto-wake system prevents roboports from staying asleep indefinitely

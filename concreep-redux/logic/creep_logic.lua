@@ -31,7 +31,40 @@ function check_roboports()
 		return
 	end
 
+	-- If fewer roboports are active than the per-tick processing quota, wake up sleeping ones
+	-- This ensures we always have enough active roboports to fill the processing capacity
+	-- Recalculate active count to respect current surface filter settings
+	count_active_creepers()
+
 	local max_creepers = settings.global["concreep-update-count"].value
+	local total_creepers = #storage.creepers
+
+	if total_creepers > 0 and storage.active_creepers < max_creepers then
+		-- Build list of sleeping roboport indices
+		local sleeping_indices = {}
+		for i = 1, total_creepers do
+			if storage.creepers[i].off then
+				table.insert(sleeping_indices, i)
+			end
+		end
+
+		if #sleeping_indices > 0 then
+			-- Wake up enough to reach the quota (or all sleeping ports, whichever is less)
+			local needed = max_creepers - storage.active_creepers
+			local to_wake = math.min(needed, #sleeping_indices)
+
+			for i = 1, to_wake do
+				local random_index = math.random(1, #sleeping_indices)
+				local creeper_index = sleeping_indices[random_index]
+				storage.creepers[creeper_index].off = false
+				storage.creepers[creeper_index].removal_counter = 0
+				storage.creepers[creeper_index].radius = 3  -- Reset radius to start scanning from the beginning
+				storage.creepers[creeper_index].upgrade = false  -- Clear upgrade mode
+				table.remove(sleeping_indices, random_index)
+			end
+			count_active_creepers()
+		end
+	end
 
 	for i = 1, max_creepers do
 		if i > #storage.creepers then return end
@@ -58,7 +91,7 @@ function is_roboport_fully_powered(roboport)
 end
 
 function is_valid_creeper(creeper)
-	return creeper and creeper.roboport and creeper.roboport.valid and not creeper.off and creeper.surface
+	return creeper and creeper.roboport and creeper.roboport.valid and creeper.surface
 end
 
 function remove_creeper(index)
@@ -81,24 +114,76 @@ function is_surface_disabled(surface_name)
 end
 
 function get_creeper()
-	if storage.index > #storage.creepers then
-		storage.index = 1
+	-- Handle empty list
+	if #storage.creepers == 0 then
+		return nil
 	end
 
-	local creeper = storage.creepers[storage.index]
-	if not is_valid_creeper(creeper) then
-		remove_creeper(storage.index)
-		return
+	-- Loop through creepers to find the next active one
+	-- Prevent infinite loops by tracking where we started
+	local start_index = storage.index
+	local iterations = 0
+	local max_iterations = #storage.creepers + 1  -- Allow one full pass plus one
+
+	while iterations < max_iterations do
+		iterations = iterations + 1
+
+		if storage.index > #storage.creepers then
+			storage.index = 1
+		end
+
+		-- Safety check for empty list (could become empty during iteration)
+		if #storage.creepers == 0 then
+			return nil
+		end
+
+		local creeper = storage.creepers[storage.index]
+
+		-- Remove invalid creepers (deleted roboports)
+		if not is_valid_creeper(creeper) then
+			remove_creeper(storage.index)
+			-- Don't increment index - removal shifts array
+			-- Adjust start_index if we removed before it
+			if storage.index < start_index then
+				start_index = start_index - 1
+			end
+		else
+			storage.index = storage.index + 1
+
+			-- Skip sleeping roboports and disabled surfaces
+			if not creeper.off and not is_surface_disabled(creeper.surface) then
+				return creeper
+			end
+
+			-- If we've looped back to where we started, nothing is active
+			if storage.index == start_index or (storage.index == 1 and start_index > #storage.creepers) then
+				return nil
+			end
+		end
 	end
 
-	if is_surface_disabled(creeper.surface) then return end
-
-	storage.index = storage.index + 1
-	return creeper
+	-- Safety: should never reach here, but return nil if we do
+	return nil
 end
 
 function creep(creeper)
 	local roboport                    = creeper.roboport
+
+	-- Check if roboport is ready to work (pattern delay in pattern mode)
+	if creeper.ready_tick and game.tick < creeper.ready_tick then
+		-- Check if it's time to re-capture the pattern (5 seconds before ready)
+		if game.tick >= creeper.ready_tick - 300 and not creeper.pattern_recaptured then
+			-- Re-capture pattern now that player has had time to place tiles
+			local pattern_size = settings.global["concreep-pattern-size"].value
+			local pattern, it, pattern_offset = capture_pattern(roboport, pattern_size)
+			creeper.pattern = pattern
+			creeper.item = it
+			creeper.pattern_offset = pattern_offset
+			creeper.pattern_recaptured = true
+		end
+		return  -- Not ready yet
+	end
+
 	local idle_bot_percentage_setting = settings.global["concreep-idle-bot-percentage"].value / 100
 
 	local available_bots              = roboport.logistic_network.available_construction_robots
@@ -661,8 +746,15 @@ function sleep_check(creeper, creep_data, upgrade_target_types, virgin_tile_chec
 		else
 			-- Check if there are upgrades to do
 			local switch = true
-			if upgrade_target_types and #upgrade_target_types > 0 and surface.count_tiles_filtered { name = upgrade_target_types, area = creep_data["area"], limit = 1 } > 0 then
-				switch = false
+			if upgrade_target_types and #upgrade_target_types > 0 then
+				local upgrade_tiles = surface.find_tiles_filtered { name = upgrade_target_types, area = creep_data["area"], limit = 1 }
+				-- If circular mode, filter to construction area
+				if creep_data.is_circular and creep_data["construction_area"] then
+					upgrade_tiles = filter_tiles_to_construction_area(upgrade_tiles, creep_data["construction_area"])
+				end
+				if #upgrade_tiles > 0 then
+					switch = false
+				end
 			end
 
 			if switch then
@@ -876,9 +968,11 @@ function roboports(event)
 	end
 end
 
-function addPort(roboport)
+-- Capture the tile pattern around a roboport position
+-- Captures both placed tiles and tile ghosts
+function capture_pattern(roboport, pattern_size)
 	local surface = roboport.surface
-	local pattern_size = settings.global["concreep-pattern-size"].value
+	local force = roboport.force
 	local half_size = pattern_size / 2
 
 	-- Calculate pattern bounds to match visualization
@@ -888,7 +982,24 @@ function addPort(roboport)
 	local right = math.floor(pos.x + half_size)
 	local bottom = math.floor(pos.y + half_size)
 
-	-- Capture the pattern the roboport sits on.
+	-- Find all tile ghosts in the pattern area
+	local area = {{left, top}, {right, bottom}}
+	local tile_ghosts = surface.find_entities_filtered{
+		area = area,
+		name = "tile-ghost",
+		force = force
+	}
+
+	-- Build a lookup table for ghosts by position
+	local ghost_lookup = {}
+	for _, ghost in pairs(tile_ghosts) do
+		local gx = math.floor(ghost.position.x)
+		local gy = math.floor(ghost.position.y)
+		local key = gx .. "," .. gy
+		ghost_lookup[key] = ghost
+	end
+
+	-- Capture the pattern the roboport sits on
 	local pattern = {}
 	local it      = {}
 
@@ -898,25 +1009,79 @@ function addPort(roboport)
 		it[idx] = {}
 		local idy = 1
 		for yy = top, bottom - 1, 1 do
-			local tile = surface.get_tile(xx, yy)
-			if tile.hidden_tile and tile.prototype.items_to_place_this then
-				it[idx][idy] = tile.prototype.items_to_place_this[1] and prototypes.item[tile.prototype.items_to_place_this[1].name] and tile.prototype.items_to_place_this[1].name
-				pattern[idx][idy] = tile.name
+			-- Check for tile ghost first
+			local key = xx .. "," .. yy
+			local ghost = ghost_lookup[key]
+
+			if ghost and ghost.valid and ghost.ghost_name then
+				-- Use the ghost tile type
+				local ghost_tile_name = ghost.ghost_name
+				local ghost_prototype = prototypes.tile[ghost_tile_name]
+				if ghost_prototype and ghost_prototype.items_to_place_this then
+					it[idx][idy] = ghost_prototype.items_to_place_this[1] and prototypes.item[ghost_prototype.items_to_place_this[1].name] and ghost_prototype.items_to_place_this[1].name
+					pattern[idx][idy] = ghost_tile_name
+				end
+			else
+				-- No ghost, check actual tile
+				local tile = surface.get_tile(xx, yy)
+				if tile.hidden_tile and tile.prototype.items_to_place_this then
+					it[idx][idy] = tile.prototype.items_to_place_this[1] and prototypes.item[tile.prototype.items_to_place_this[1].name] and tile.prototype.items_to_place_this[1].name
+					pattern[idx][idy] = tile.name
+				end
 			end
 			idy = idy + 1
 		end
 		idx = idx + 1
 	end
 
+	return pattern, it, {left, top}
+end
+
+function addPort(roboport)
+	local surface = roboport.surface
+	local pattern_size = settings.global["concreep-pattern-size"].value
+	local tile_mode = settings.global["concreep-tile-mode"].value
+
+	local pattern, it, pattern_offset = capture_pattern(roboport, pattern_size)
+
+	-- In pattern mode, delay pattern capture and creeping to give player time to place tiles
+	-- Store the tick when this roboport should start working (30 seconds = 1800 ticks)
+	local ready_tick = nil
+	if tile_mode == "pattern" then
+		ready_tick = game.tick + 1800
+	end
+
 	table.insert(storage.creepers,
-				 { roboport = roboport, surface = surface.name, radius = 3, pattern = pattern, item = it, pattern_size = pattern_size, pattern_offset = {left, top}, off = false, removal_counter = 0 })
+				 { roboport = roboport, surface = surface.name, radius = 3, pattern = pattern, item = it, pattern_size = pattern_size, pattern_offset = pattern_offset, off = false, removal_counter = 0, ready_tick = ready_tick })
+end
+
+-- Re-capture patterns for all roboports with the current pattern size
+function recapture_all_patterns()
+	if not storage.creepers then return end
+
+	local pattern_size = settings.global["concreep-pattern-size"].value
+	local recaptured = 0
+
+	for _, creeper in pairs(storage.creepers) do
+		if creeper.roboport and creeper.roboport.valid then
+			local pattern, it, pattern_offset = capture_pattern(creeper.roboport, pattern_size)
+			creeper.pattern = pattern
+			creeper.item = it
+			creeper.pattern_size = pattern_size
+			creeper.pattern_offset = pattern_offset
+			recaptured = recaptured + 1
+		end
+	end
+
+	return recaptured
 end
 
 function count_active_creepers()
 	storage.active_creepers = 0
 
 	for i = #storage.creepers, 1, -1 do
-		if storage.creepers[i].off == false then
+		-- Only count creepers that are awake AND on enabled surfaces
+		if storage.creepers[i].off == false and not is_surface_disabled(storage.creepers[i].surface) then
 			storage.active_creepers = storage.active_creepers + 1
 		end
 	end
@@ -943,28 +1108,3 @@ script.on_event(
 script.on_nth_tick(settings.startup["concreep-update-frequency"].value * 60, check_roboports)
 script.on_init(init)
 script.on_configuration_changed(init)
-
--- Console command to wake up all roboports
-commands.add_command("concreep-wake", "Wake up all sleeping roboports", function(event)
-	if not storage.creepers then
-		game.print("Concreep not initialized yet.")
-		return
-	end
-
-	local woken = 0
-	for i = 1, #storage.creepers do
-		if storage.creepers[i].off then
-			storage.creepers[i].off = false
-			storage.creepers[i].removal_counter = 0
-			woken = woken + 1
-		end
-	end
-
-	count_active_creepers()
-
-	if event.player_index then
-		game.get_player(event.player_index).print("Woke up " .. woken .. " sleeping roboports. Active: " .. storage.active_creepers)
-	else
-		game.print("Woke up " .. woken .. " sleeping roboports. Active: " .. storage.active_creepers)
-	end
-end)
