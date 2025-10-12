@@ -90,7 +90,9 @@ script.on_event(defines.events.on_player_cursor_stack_changed, function(event)
 	-- Clear any existing renders for this player
 	if storage.pattern_renders[event.player_index] then
 		for _, render_id in pairs(storage.pattern_renders[event.player_index]) do
-			rendering.destroy(render_id)
+			if render_id and render_id.valid then
+				render_id.destroy()
+			end
 		end
 		storage.pattern_renders[event.player_index] = nil
 	end
