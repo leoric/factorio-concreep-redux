@@ -1,4 +1,30 @@
 ---------------------------------------------------------------------------------------------------
+Version: 3.2.0
+Date: 2025/10/12
+  Added:
+    - Roboport sidebar GUI showing concreep status: displays active/sleeping/upgrading state, current/target radius, tile mode, and countdown timers
+    - Pattern mode enhancements: tile ghosts are now detected and included when capturing patterns
+    - Pattern mode delay system: new roboports wait 30 seconds before starting to creep, giving time to place tile patterns
+    - Automatic pattern re-capture 5 seconds before roboports activate, ensuring tile ghosts are included
+    - Auto-wake system: randomly wakes 1-3 sleeping roboports when fewer than 5% are active, to recheck for upgrades
+    - Console commands: /concreep-help, /concreep-status, /concreep-rebuild, /concreep-wake for managing roboports
+    - Setting change detection: patterns automatically re-captured when enabling pattern mode or changing pattern size
+  Changes:
+    - Pattern mode now shows informative warnings when enabled, explaining the 30-second delay and re-capture behavior
+    - Commands moved to separate commands.lua file for better code organization
+    - Improved skip logic for sleeping roboports - now finds next active roboport in single call instead of one-at-a-time
+  Bugfixes:
+    - Fixed sleep mode not working: circular mode now properly filters upgrade tiles to construction area before checking
+    - Fixed surface filtering bug: index now increments before surface check, preventing infinite loop when one surface disabled
+    - Fixed sleeping roboports being permanently deleted: removed "off" check from validation, now properly skips sleeping roboports
+    - Fixed game freeze when opening deleted roboports: added pcall wrapper to GUI updates and iteration limits to get_creeper()
+  Optimizations:
+    - GUI updates wrapped in pcall to prevent crashes
+    - Multiple safety checks added to prevent infinite loops in roboport iteration
+  Migration:
+    - Automatic migration rebuilds roboport list on upgrade to fix saves affected by sleeping roboport deletion bug
+
+---------------------------------------------------------------------------------------------------
 Version: 3.1.0
 Date: 2025/10/11
   Added:
