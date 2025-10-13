@@ -7,5 +7,5 @@
   "homepage": "https://github.com/utoxin/concreep-redux",
   "description": "Roboports automatically place and upgrade concrete within their reach.",
   "factorio_version": "2.0",
-  "dependencies": ["base >= 2.0.0", "(?)space-exploration"]
+  "dependencies": ["base >= 2.0.0", "(?)space-exploration", "(?)territory_claim"]
 }

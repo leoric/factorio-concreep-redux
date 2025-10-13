@@ -71,6 +71,20 @@ data:extend({
         order = "037"
     },
     {
+        type = "bool-setting",
+        name = "creep-foundation",
+        setting_type = "runtime-global",
+        default_value = false,
+        order = "037a"
+    },
+    {
+        type = "bool-setting",
+        name = "creep-ice-platform",
+        setting_type = "runtime-global",
+        default_value = false,
+        order = "037b"
+    },
+    {
         type = "int-setting",
         name = "concreep-agricultural-tower-radius",
         setting_type = "runtime-global",

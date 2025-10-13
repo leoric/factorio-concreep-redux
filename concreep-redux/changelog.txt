@@ -1,13 +1,22 @@
 ---------------------------------------------------------------------------------------------------
 Version: 3.3.0
-Date: TBD
+Date: 2025/10/13
   Added:
+    - Territory Claim mod support: Concreep now respects territory ownership and will not place tiles on enemy or disputed territory (Issue #45)
+    - Sleep reason tracking: Roboport GUI now shows why a roboport stopped early - either "territory boundary" when blocked by Territory Claim or "work complete" when finished
+    - Optional foundation tile placement: New setting to place foundation tiles on lava oceans (Vulcanus) and oil oceans (Fulgora). Disabled by default due to resource cost.
+    - Optional ice platform tile placement: New setting to place ice platform tiles on ammonia oceans (Aquilo). Disabled by default due to resource cost.
   Changes:
+    - Territory Claim boundaries are now treated as natural stopping points - roboports will sleep when all remaining tiles are in enemy/disputed territory rather than continuing to expand
+    - Wake commands (both manual /concreep-wake and automatic wake system) now clear sleep reasons when waking roboports
   Bugfixes:
     - Fixed infinite log spam on space platform surfaces by filtering out surfaces starting with "platform-" (Issue #41)
+    - Fixed concrete not being placed on ice platforms on Aquilo: ice-platform tiles are now treated like landfill tiles and prioritized for concreting (Issue #46)
     - Fixed Space Exploration tile placement in space: Implemented two-phase tile search (similar to landfill_creep) that prioritizes empty space (se-space) tiles first, then processes asteroid (se-asteroid) tiles only if no empty space is available. This prevents the API search limit from being exhausted by nearby asteroids before distant empty space tiles can be reached, ensuring consistent tile placement across the entire area. Scaffolding is restricted to empty space only, while plating can be placed on both tile types.
     - Fixed Space Exploration radius expansion logic: space_sleep_check now prioritizes empty space (se-space) tiles and allows radius expansion when all empty space is filled, even if asteroid (se-asteroid) tiles remain, as long as plating is unavailable. When plating is available, the radius only expands after both empty space and asteroids are processed. This prevents the roboport from getting stuck when it runs out of plating but still has empty space to cover at larger radii.
   Optimizations:
+    - Cached Territory Claim mod detection in storage to avoid repeated interface lookups on every tile filter operation
+    - Eliminated redundant settings lookups in area_tile_creep function
 
 ---------------------------------------------------------------------------------------------------
 Version: 3.2.0

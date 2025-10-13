@@ -8,6 +8,8 @@ if not mods["space-age"] then
     data.raw["bool-setting"]["concreep-fulgora-enable"].hidden = true
     data.raw["bool-setting"]["concreep-vulcanus-enable"].hidden = true
     data.raw["bool-setting"]["concreep-aquilo-enable"].hidden = true
+    data.raw["bool-setting"]["creep-foundation"].hidden = true
+    data.raw["bool-setting"]["creep-ice-platform"].hidden = true
 end
 
 data.raw["bool-setting"]["concreep-replace-artificial-soils"].hidden = true
