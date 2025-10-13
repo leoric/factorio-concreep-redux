@@ -2,6 +2,7 @@ function creep_init()
 	storage.creepers        = {}
 	storage.active_creepers = 0
 	storage.space_age_active = false
+	storage.territory_claim_active = remote.interfaces["TerritoryClaim"] ~= nil
 	wake_up_creepers()
 end
 
@@ -22,7 +23,7 @@ end
 
 function check_roboports()
 	if not storage.active_creepers then
-		init()
+		creep_init()
 		return
 	end
 
@@ -60,6 +61,7 @@ function check_roboports()
 				storage.creepers[creeper_index].removal_counter = 0
 				storage.creepers[creeper_index].radius = 3  -- Reset radius to start scanning from the beginning
 				storage.creepers[creeper_index].upgrade = false  -- Clear upgrade mode
+				storage.creepers[creeper_index].sleep_reason = nil  -- Clear sleep reason
 				table.remove(sleeping_indices, random_index)
 			end
 			count_active_creepers()
@@ -100,6 +102,16 @@ function remove_creeper(index)
 end
 
 function is_surface_disabled(surface_name)
+	-- Filter out space platform surfaces using the surface.platform property
+	-- This is more reliable than pattern matching and works with Space Age or mods like Lyra Robots in Space
+	local surface = game.surfaces[surface_name]
+	if surface and surface.platform then
+		return true  -- This surface is associated with a space platform, don't process it
+	end
+
+	-- Check Space Age planet-specific settings
+	-- For custom surfaces (from mods like Territory Claim), return false (not disabled)
+	-- This allows the mod to work on any surface, not just vanilla planets
 	if script.active_mods["space-age"] then
 		local disabled_surfaces = {
 			["nauvis"] = not settings.global["concreep-nauvis-enable"].value,
@@ -108,7 +120,9 @@ function is_surface_disabled(surface_name)
 			["vulcanus"] = not settings.global["concreep-vulcanus-enable"].value,
 			["aquilo"] = not settings.global["concreep-aquilo-enable"].value
 		}
-		return disabled_surfaces[surface_name]
+		-- Returns the setting value if surface is known, nil (falsy) if unknown
+		-- Unknown surfaces (from mods) are treated as enabled
+		return disabled_surfaces[surface_name] or false
 	end
 	return false
 end
@@ -280,6 +294,12 @@ function landfill_creep(creeper, creep_data)
 	local surface      = roboport.surface
 	local force        = roboport.force
 
+	-- Landfill doesn't work on Vulcanus (lava), Fulgora (oil ocean), or Aquilo (ammonia ocean)
+	-- Those surfaces require foundation or ice-platform instead
+	if surface.name == "vulcanus" or surface.name == "fulgora" or surface.name == "aquilo" then
+		return
+	end
+
 	local ghosts       = surface.count_entities_filtered { area = creep_data["area"], name = "tile-ghost", force = force }
 
 	local virgin_tile_filter = get_virgin_tile_filter(creep_data)
@@ -291,6 +311,9 @@ function landfill_creep(creeper, creep_data)
 	if creep_data.is_circular then
 		water_tiles = filter_tiles_to_construction_area(water_tiles, creep_data["construction_area"])
 	end
+
+	-- Filter out tiles on enemy/disputed territory (Territory Claim mod support)
+	water_tiles = filter_territory_claim_tiles(surface, water_tiles, force)
 
 	-- Wait for ghosts to finish building first.
 	if ghosts >= #water_tiles and ghosts > 0 then
@@ -319,6 +342,142 @@ function landfill_creep(creeper, creep_data)
 	end
 end
 
+function foundation_creep(creeper, creep_data)
+	-- Foundation can be placed on lava (Vulcanus) and oil ocean (Fulgora)
+	-- Use collision masks to find appropriate tiles instead of hardcoded names
+	local roboport     = creeper.roboport
+	local surface      = roboport.surface
+	local force        = roboport.force
+
+	local ghosts       = surface.count_entities_filtered { area = creep_data["area"], name = "tile-ghost", force = force }
+
+	local foundation_tiles = {}
+	local virgin_tile_filter = get_virgin_tile_filter(creep_data)
+
+	-- Vulcanus: Search for tiles with lava_tile collision mask
+	if surface.name == "vulcanus" then
+		virgin_tile_filter.collision_mask = {"lava_tile"}
+		local tiles = surface.find_tiles_filtered(virgin_tile_filter)
+
+		-- If circular mode, filter to construction area
+		if creep_data.is_circular then
+			tiles = filter_tiles_to_construction_area(tiles, creep_data["construction_area"])
+		end
+
+		foundation_tiles = tiles
+	-- Fulgora: Oil ocean tiles have water_tile collision mask but are NOT regular water
+	-- We need to find water tiles that are NOT on Nauvis-like surfaces
+	elseif surface.name == "fulgora" then
+		virgin_tile_filter.collision_mask = {"water_tile"}
+		-- Additionally, filter out any tiles that have "floor" in collision mask (those are ammonia ocean)
+		local tiles = surface.find_tiles_filtered(virgin_tile_filter)
+
+		-- If circular mode, filter to construction area
+		if creep_data.is_circular then
+			tiles = filter_tiles_to_construction_area(tiles, creep_data["construction_area"])
+		end
+
+		-- Filter to only oil ocean tiles by checking they're NOT water (no hidden_tile)
+		-- Oil ocean tiles don't have hidden_tile property like water does
+		local filtered = {}
+		for _, tile in pairs(tiles) do
+			-- Oil ocean tiles won't have a hidden_tile (they're not covering land)
+			-- This distinguishes them from regular water which might have been placed over land
+			if not tile.prototype.check_collision_with_entities and tile.prototype.collision_mask["water_tile"] then
+				table.insert(filtered, tile)
+			end
+		end
+		foundation_tiles = filtered
+	else
+		return  -- Not on a valid surface
+	end
+
+	-- Filter out tiles on enemy/disputed territory (Territory Claim mod support)
+	foundation_tiles = filter_territory_claim_tiles(surface, foundation_tiles, force)
+
+	-- Wait for ghosts to finish building first.
+	if ghosts >= #foundation_tiles and ghosts > 0 then
+		return
+	end
+
+	local count            = 0
+	local foundation_count = math.max(0,
+									  roboport.logistic_network.get_item_count("foundation") - creep_data["minimum_item_count_setting"])
+
+	local pump_radius = settings.global["concreep-pump-radius"].value
+
+	for i = #foundation_tiles, 1, -1 do
+		if count < foundation_count then
+			local pump_count = 0
+			if pump_radius > 0 then
+				pump_count = surface.count_entities_filtered { position = foundation_tiles[i].position, radius = pump_radius, name = "offshore-pump"}
+				pump_count = pump_count + surface.count_entities_filtered { position = foundation_tiles[i].position, radius = pump_radius, type = "entity-ghost", ghost_name = "offshore-pump"}
+			end
+
+			if pump_count == 0 then
+				count = count + build_tile(roboport, "foundation", foundation_tiles[i].position, creep_data["construction_area"])
+				creeper.removal_counter = 0
+			end
+		end
+	end
+end
+
+function ice_platform_creep(creeper, creep_data)
+	-- Ice platform can be placed on ammonia ocean (Aquilo)
+	-- Use collision masks to find ammonia ocean tiles (have "floor" collision mask)
+	local roboport     = creeper.roboport
+	local surface      = roboport.surface
+	local force        = roboport.force
+
+	-- Only run on Aquilo
+	if surface.name ~= "aquilo" then
+		return
+	end
+
+	local ghosts       = surface.count_entities_filtered { area = creep_data["area"], name = "tile-ghost", force = force }
+
+	-- Ammonia ocean tiles have water_tile + floor collision masks
+	-- Search for tiles with "floor" collision mask (unique to ammonia ocean)
+	local virgin_tile_filter = get_virgin_tile_filter(creep_data)
+	virgin_tile_filter.collision_mask = {"floor"}
+
+	local ammonia_tiles = surface.find_tiles_filtered(virgin_tile_filter)
+
+	-- If circular mode, filter to construction area
+	if creep_data.is_circular then
+		ammonia_tiles = filter_tiles_to_construction_area(ammonia_tiles, creep_data["construction_area"])
+	end
+
+	-- Filter out tiles on enemy/disputed territory (Territory Claim mod support)
+	ammonia_tiles = filter_territory_claim_tiles(surface, ammonia_tiles, force)
+
+	-- Wait for ghosts to finish building first.
+	if ghosts >= #ammonia_tiles and ghosts > 0 then
+		return
+	end
+
+	local count               = 0
+	local ice_platform_count  = math.max(0,
+										 roboport.logistic_network.get_item_count("ice-platform") - creep_data["minimum_item_count_setting"])
+
+	local pump_radius = settings.global["concreep-pump-radius"].value
+
+	for i = #ammonia_tiles, 1, -1 do
+		if count < ice_platform_count then
+			local pump_count = 0
+			if pump_radius > 0 then
+				pump_count = surface.count_entities_filtered { position = ammonia_tiles[i].position, radius = pump_radius, name = "offshore-pump"}
+				pump_count = pump_count + surface.count_entities_filtered { position = ammonia_tiles[i].position, radius = pump_radius, type = "entity-ghost", ghost_name = "offshore-pump"}
+			end
+
+			if pump_count == 0 then
+				count = count + build_tile(roboport, "ice-platform", ammonia_tiles[i].position, creep_data["construction_area"])
+				creeper.removal_counter = 0
+			end
+		end
+	end
+end
+
 function standard_creep(creeper, creep_data)
 	local roboport     = creeper.roboport
 	local surface      = roboport.surface
@@ -328,12 +487,29 @@ function standard_creep(creeper, creep_data)
 		landfill_creep(creeper, creep_data)
 	end
 
+	-- Foundation: only on Vulcanus (lava) and Fulgora (oil ocean)
+	if settings.global["creep-foundation"].value and script.active_mods["space-age"] then
+		if surface.name == "vulcanus" or surface.name == "fulgora" then
+			foundation_creep(creeper, creep_data)
+		end
+	end
+
+	-- Ice platform: only on Aquilo (ammonia ocean)
+	if settings.global["creep-ice-platform"].value and script.active_mods["space-age"] then
+		if surface.name == "aquilo" then
+			ice_platform_creep(creeper, creep_data)
+		end
+	end
+
 	local ghosts       = surface.count_entities_filtered { area = creep_data["area"], name = "tile-ghost", force = force }
 	local virgin_tiles = get_landfill_and_virgin_tiles(surface, creep_data)
 
 	-- Filter out tiles near agricultural towers
 	local agricultural_tower_radius = settings.global["concreep-agricultural-tower-radius"].value
 	virgin_tiles = filter_agricultural_tower_tiles(surface, virgin_tiles, agricultural_tower_radius)
+
+	-- Filter out tiles on enemy/disputed territory (Territory Claim mod support)
+	virgin_tiles = filter_territory_claim_tiles(surface, virgin_tiles, force)
 
 	-- Wait for ghosts to finish building first.
 	if #virgin_tiles > 0 and ghosts >= #virgin_tiles and ghosts > 0 then
@@ -509,7 +685,40 @@ function get_landfill_and_virgin_tiles(surface, creep_data)
 		virgin_tiles = filter_tiles_to_construction_area(virgin_tiles, creep_data["construction_area"])
 	end
 
-	-- If no landfill tiles found, look for regular virgin tiles
+	-- If no landfill tiles found, check for Space Age placed tiles (foundation/ice-platform)
+	if #virgin_tiles == 0 and script.active_mods["space-age"] then
+		local special_tile_name = nil
+
+		-- Determine which special tile to look for based on surface
+		if surface.name == "vulcanus" or surface.name == "fulgora" then
+			special_tile_name = "foundation"
+		elseif surface.name == "aquilo" then
+			special_tile_name = "ice-platform"
+		end
+
+		-- Search for the special tile if one is defined for this surface
+		if special_tile_name then
+			local special_tile_filter = {
+				name = special_tile_name,
+				limit = creep_data["usable_robots"],
+				area = creep_data["area"]
+			}
+
+			if is_circular then
+				special_tile_filter.position = creep_data.position
+				special_tile_filter.radius = creep_data["current_radius"]
+				special_tile_filter.area = nil
+			end
+
+			virgin_tiles = surface.find_tiles_filtered(special_tile_filter)
+
+			if is_circular then
+				virgin_tiles = filter_tiles_to_construction_area(virgin_tiles, creep_data["construction_area"])
+			end
+		end
+	end
+
+	-- If no landfill or ice platform tiles found, look for regular virgin tiles
 	if #virgin_tiles == 0 then
 		virgin_tiles = surface.find_tiles_filtered(get_virgin_tile_filter(creep_data))
 
@@ -559,12 +768,29 @@ function area_tile_creep(creeper, creep_data)
 		landfill_creep(creeper, creep_data)
 	end
 
+	-- Foundation: only on Vulcanus (lava) and Fulgora (oil ocean)
+	if settings.global["creep-foundation"].value and script.active_mods["space-age"] then
+		if surface.name == "vulcanus" or surface.name == "fulgora" then
+			foundation_creep(creeper, creep_data)
+		end
+	end
+
+	-- Ice platform: only on Aquilo (ammonia ocean)
+	if settings.global["creep-ice-platform"].value and script.active_mods["space-age"] then
+		if surface.name == "aquilo" then
+			ice_platform_creep(creeper, creep_data)
+		end
+	end
+
 	local ghosts       = surface.count_entities_filtered({ area = creep_data["area"], name = "tile-ghost", force = force })
 	local virgin_tiles = get_landfill_and_virgin_tiles(surface, creep_data)
 
 	-- Filter out tiles near agricultural towers
 	local agricultural_tower_radius = settings.global["concreep-agricultural-tower-radius"].value
 	virgin_tiles = filter_agricultural_tower_tiles(surface, virgin_tiles, agricultural_tower_radius)
+
+	-- Filter out tiles on enemy/disputed territory (Territory Claim mod support)
+	virgin_tiles = filter_territory_claim_tiles(surface, virgin_tiles, force)
 
 	-- Wait for ghosts to finish building first.
 	if #virgin_tiles > 0 and ghosts >= #virgin_tiles and ghosts > 0 then
@@ -574,8 +800,8 @@ function area_tile_creep(creeper, creep_data)
 	local logistic_area_item          = settings.global["concreep-logistic-area-tile"].value
 	local construction_area_item      = settings.global["concreep-construction-area-tile"].value
 
-	local logistic_area_tile          = settings.global["concreep-logistic-area-tile"].value
-	local construction_area_tile      = settings.global["concreep-construction-area-tile"].value
+	local logistic_area_tile          = logistic_area_item
+	local construction_area_tile      = construction_area_item
 
 	if logistic_area_tile == 'stone-brick' then
 		logistic_area_tile          = "stone-path"
@@ -585,7 +811,7 @@ function area_tile_creep(creeper, creep_data)
 		construction_area_tile      = "stone-path"
 	end
 
-	local minimum_item_count_setting  = settings.global["concreep-minimum-item-count"].value
+	local minimum_item_count_setting  = creep_data["minimum_item_count_setting"]
 
 	local count                       = 0
 
@@ -641,33 +867,63 @@ function space_creep(creeper, creep_data)
 
 	local ghosts       = surface.count_entities_filtered { area = creep_data["area"], name = "tile-ghost", force = force }
 
-	local virgin_tile_filter = get_virgin_tile_filter(creep_data)
-	virgin_tile_filter.name = "se-space"
-	local virgin_tiles = surface.find_tiles_filtered(virgin_tile_filter)
-
-	-- Wait for ghosts to finish building first.
-	if ghosts >= #virgin_tiles and ghosts > 0 then
-		return
-	end
-
-	local count                = 0
-
 	local space_scaffold_count = math.max(0,
 										  roboport.logistic_network.get_item_count("se-space-platform-scaffold") - creep_data["minimum_item_count_setting"])
 	local space_tile_count     = math.max(0,
 										  roboport.logistic_network.get_item_count("se-space-platform-plating") - creep_data["minimum_item_count_setting"])
 
-	for i = #virgin_tiles, 1, -1 do
+	-- Two-phase search, similar to landfill_creep:
+	-- Phase 1: Prioritize empty space (se-space) tiles - can place both plating and scaffolding
+	-- Phase 2: Process asteroid (se-asteroid) tiles - can only place plating
+	-- This prevents the API limit from being exhausted by nearby asteroids before reaching distant empty space.
+	
+	-- Phase 1: Search for empty space tiles (se-space)
+	-- Don't use get_virgin_tile_filter because it includes collision_mask="ground_tile"
+	-- which doesn't match space tiles. Build a custom filter for space.
+	local space_tile_filter = {
+		name = "se-space",
+		limit = creep_data["usable_robots"],
+		area = creep_data["area"]
+	}
+	
+	-- Override with position/radius if circular mode (matching get_tile_filter pattern)
+	if creep_data.is_circular then
+		space_tile_filter.position = creep_data.position
+		space_tile_filter.radius = creep_data["current_radius"]
+		space_tile_filter.area = nil  -- Remove area, we'll filter manually
+	end
+	
+	local space_tiles = surface.find_tiles_filtered(space_tile_filter)
+	
+	-- If circular mode, filter to construction area
+	if creep_data.is_circular then
+		space_tiles = filter_tiles_to_construction_area(space_tiles, creep_data["construction_area"])
+	end
+
+	-- Filter out tiles on enemy/disputed territory (Territory Claim mod support)
+	space_tiles = filter_territory_claim_tiles(surface, space_tiles, force)
+
+	-- Wait for ghosts to finish building first.
+	if ghosts >= #space_tiles and ghosts > 0 then
+		return
+	end
+
+	local count = 0
+
+	-- Process empty space tiles - can place both plating and scaffolding
+	for i = #space_tiles, 1, -1 do
 		local ghost_type
+		local tile_position = space_tiles[i].position
 
 		if count < space_tile_count then
 			ghost_type = "se-space-platform-plating"
 		elseif count < space_scaffold_count then
+			-- Scaffolding can be placed on empty space
 			ghost_type = "se-space-platform-scaffold"
 		end
 
 		if ghost_type then
-			count = count + build_tile(roboport, ghost_type, virgin_tiles[i].position, creep_data["construction_area"])
+			count = count + build_tile(roboport, ghost_type, tile_position, creep_data["construction_area"])
 		end
 
 		creeper.removal_counter = 0
@@ -675,6 +931,44 @@ function space_creep(creeper, creep_data)
 
 	if count >= creep_data["usable_robots"] then
 		return true
+	end
+
+	-- Phase 2: If no empty space tiles, search for asteroid tiles (se-asteroid)
+	-- Only place plating on asteroids, never scaffolding
+	if #space_tiles == 0 then
+		local asteroid_tile_filter = {
+			name = "se-asteroid",
+			limit = creep_data["usable_robots"],
+			area = creep_data["area"]
+		}
+		
+		if creep_data.is_circular then
+			asteroid_tile_filter.position = creep_data.position
+			asteroid_tile_filter.radius = creep_data["current_radius"]
+			asteroid_tile_filter.area = nil
+		end
+		
+		local asteroid_tiles = surface.find_tiles_filtered(asteroid_tile_filter)
+
+		if creep_data.is_circular then
+			asteroid_tiles = filter_tiles_to_construction_area(asteroid_tiles, creep_data["construction_area"])
+		end
+
+		-- Filter out tiles on enemy/disputed territory (Territory Claim mod support)
+		asteroid_tiles = filter_territory_claim_tiles(surface, asteroid_tiles, force)
+
+		-- Process asteroid tiles - can only place plating
+		for i = #asteroid_tiles, 1, -1 do
+			if count < space_tile_count then
+				local tile_position = asteroid_tiles[i].position
+				count = count + build_tile(roboport, "se-space-platform-plating", tile_position, creep_data["construction_area"])
+				creeper.removal_counter = 0
+			end
+		end
+
+		if count >= creep_data["usable_robots"] then
+			return true
+		end
 	end
 
 	creep_data["usable_robots"] = creep_data["usable_robots"] - count
@@ -723,6 +1017,7 @@ function sleep_check(creeper, creep_data, upgrade_target_types, virgin_tile_chec
 
 	-- Check if there are any virgin tiles left using provided filter (or default)
 	local virgin_count
+	local virgin_count_before_tc_filter = 0
 	if virgin_tile_check_filter then
 		virgin_count = surface.count_tiles_filtered(virgin_tile_check_filter)
 	else
@@ -734,7 +1029,118 @@ function sleep_check(creeper, creep_data, upgrade_target_types, virgin_tile_chec
 		-- Exclude tiles protected by agricultural towers to avoid getting stuck when only blocked tiles remain
 		local agricultural_tower_radius = settings.global["concreep-agricultural-tower-radius"].value
 		virgin_tiles = filter_agricultural_tower_tiles(surface, virgin_tiles, agricultural_tower_radius)
+
+		-- Track count before TC filtering to detect when we're hitting territory boundaries
+		virgin_count_before_tc_filter = #virgin_tiles
+
+		-- Exclude tiles on enemy/disputed territory (Territory Claim mod support)
+		virgin_tiles = filter_territory_claim_tiles(surface, virgin_tiles, roboport.force)
 		virgin_count = #virgin_tiles
+	end
+
+	if virgin_count == 0 then
+		-- If Territory Claim filtered out all remaining tiles, stop expanding and sleep
+		-- This happens when we've reached enemy/disputed territory boundaries
+		if virgin_count_before_tc_filter > 0 and virgin_count == 0 then
+			-- TC blocked all remaining tiles - accept this as a natural boundary
+			creeper.off             = true
+			creeper.removal_counter = 1
+			creeper.sleep_reason    = "territory"
+			storage.active_creepers = storage.active_creepers - 1
+			return
+		end
+
+		-- Compare unadjusted radius against target (both are square radii)
+		local radius_to_compare = creep_data.unadjusted_radius or creep_data["current_radius"]
+		if radius_to_compare < creep_data["target_creep_radius"] then
+			-- Expand radius (but don't exceed the target)
+			creeper.radius = math.min(creeper.radius + 1, creep_data["target_creep_radius"])
+		else
+			-- Check if there are upgrades to do
+			local switch = true
+			if upgrade_target_types and #upgrade_target_types > 0 then
+				local upgrade_tiles = surface.find_tiles_filtered { name = upgrade_target_types, area = creep_data["area"], limit = 1 }
+				-- If circular mode, filter to construction area
+				if creep_data.is_circular and creep_data["construction_area"] then
+					upgrade_tiles = filter_tiles_to_construction_area(upgrade_tiles, creep_data["construction_area"])
+				end
+				if #upgrade_tiles > 0 then
+					switch = false
+				end
+			end
+
+			if switch then
+				-- No more work, put creeper to sleep
+				creeper.off             = true
+				creeper.removal_counter = 1
+				creeper.sleep_reason    = "complete"
+				storage.active_creepers = storage.active_creepers - 1
+			else
+				-- Switch to upgrade mode
+				creeper.radius  = 3
+				creeper.upgrade = true
+			end
+		end
+	end
+end
+
+function area_tile_sleep_check(creeper, creep_data)
+	sleep_check(creeper, creep_data, nil, nil)
+end
+
+function standard_sleep_check(creeper, creep_data, upgrade_target_types)
+	sleep_check(creeper, creep_data, upgrade_target_types, nil)
+end
+
+function space_sleep_check(creeper, creep_data, upgrade_target_types)
+	-- Space tiling uses two-phase search: se-space first (can place plating/scaffolding), then se-asteroid (plating only)
+	-- Allow radius expansion if all se-space tiles are filled, even if asteroids remain but plating is unavailable
+	local roboport = creeper.roboport
+	local surface  = roboport.surface
+
+	-- Check for empty space (se-space) tiles first, with TC filtering
+	local space_tiles = surface.find_tiles_filtered({ area = creep_data["area"], name = "se-space" })
+	local space_tile_count_before_tc = #space_tiles
+	space_tiles = filter_territory_claim_tiles(surface, space_tiles, roboport.force)
+	local space_tile_count = #space_tiles
+
+	-- If Territory Claim blocked all remaining space tiles, stop expanding and sleep
+	if space_tile_count_before_tc > 0 and space_tile_count == 0 then
+		creeper.off             = true
+		creeper.removal_counter = 1
+		creeper.sleep_reason    = "territory"
+		storage.active_creepers = storage.active_creepers - 1
+		return
+	end
+
+	-- If there are still empty space tiles, don't expand yet
+	if space_tile_count > 0 then
+		return
+	end
+
+	-- All empty space is filled. Now check if we should expand based on asteroids.
+	-- Check if plating is available
+	local space_tile_count_available = math.max(0,
+		roboport.logistic_network.get_item_count("se-space-platform-plating") - creep_data["minimum_item_count_setting"])
+
+	-- If plating is available, check for asteroid tiles before expanding (with TC filtering)
+	local virgin_count = 0
+	local virgin_count_before_tc = 0
+	if space_tile_count_available > 0 then
+		local asteroid_tiles = surface.find_tiles_filtered({ area = creep_data["area"], name = "se-asteroid" })
+		virgin_count_before_tc = #asteroid_tiles
+		asteroid_tiles = filter_territory_claim_tiles(surface, asteroid_tiles, roboport.force)
+		virgin_count = #asteroid_tiles
+	end
+	-- If no plating available, virgin_count stays 0, allowing radius expansion
+
+	-- If Territory Claim blocked all remaining asteroid tiles, stop expanding and sleep
+	if virgin_count_before_tc > 0 and virgin_count == 0 then
+		creeper.off             = true
+		creeper.removal_counter = 1
+		creeper.sleep_reason    = "territory"
+		storage.active_creepers = storage.active_creepers - 1
+		return
 	end
 
 	if virgin_count == 0 then
@@ -761,6 +1167,7 @@ function sleep_check(creeper, creep_data, upgrade_target_types, virgin_tile_chec
 				-- No more work, put creeper to sleep
 				creeper.off             = true
 				creeper.removal_counter = 1
+				creeper.sleep_reason    = "complete"
 				storage.active_creepers = storage.active_creepers - 1
 			else
 				-- Switch to upgrade mode
@@ -771,16 +1178,31 @@ function sleep_check(creeper, creep_data, upgrade_target_types, virgin_tile_chec
 	end
 end
 
-function area_tile_sleep_check(creeper, creep_data)
-	sleep_check(creeper, creep_data, nil, nil)
-end
+function filter_territory_claim_tiles(surface, tiles, force)
+	-- Only filter if Territory Claim mod is loaded
+	-- Cache this check in storage for performance (checked once on init/config change)
+	if not storage.territory_claim_active then
+		return tiles  -- Mod not loaded, return all tiles
+	end
 
-function standard_sleep_check(creeper, creep_data, upgrade_target_types)
-	sleep_check(creeper, creep_data, upgrade_target_types, nil)
-end
+	local filtered = {}
 
-function space_sleep_check(creeper, creep_data, upgrade_target_types)
-	sleep_check(creeper, creep_data, upgrade_target_types, { area = creep_data["area"], name = "se-space", collision_mask = "empty_space" })
+	for i = 1, #tiles do
+		local position = tiles[i].position
+		-- Call Territory Claim's remote interface to check territory ownership
+		local owner = remote.call("TerritoryClaim", "get_territory_from_position", surface.name, position)
+
+		-- TC API returns:
+		-- nil = unclaimed territory (allowed)
+		-- force.name = owned by our force (allowed)
+		-- 'disputed_territory' = territory in dispute (blocked)
+		-- other force name = owned by another force (blocked)
+		if owner == nil or owner == force.name then
+			filtered[#filtered + 1] = tiles[i]
+		end
+	end
+
+	return filtered
 end
 
 function filter_agricultural_tower_tiles(surface, tiles, base_radius)
