@@ -865,12 +865,18 @@ function space_creep(creeper, creep_data)
 	local surface      = roboport.surface
 	local force        = roboport.force
 
-	local ghosts       = surface.count_entities_filtered { area = creep_data["area"], name = "tile-ghost", force = force }
-
 	local space_scaffold_count = math.max(0,
 										  roboport.logistic_network.get_item_count("se-space-platform-scaffold") - creep_data["minimum_item_count_setting"])
 	local space_tile_count     = math.max(0,
 										  roboport.logistic_network.get_item_count("se-space-platform-plating") - creep_data["minimum_item_count_setting"])
+
+	-- If space tile placement is disabled, skip virgin tile placement (but still allow upgrades below)
+	if not settings.global["creep-space-scaffold"].value then
+		-- Skip to upgrade phase
+		goto skip_virgin_tiles
+	end
+
+	local ghosts       = surface.count_entities_filtered { area = creep_data["area"], name = "tile-ghost", force = force }
 
 	-- Two-phase search, similar to landfill_creep:
 	-- Phase 1: Prioritize empty space (se-space) tiles - can place both plating and scaffolding
@@ -970,6 +976,8 @@ function space_creep(creeper, creep_data)
 			return true
 		end
 	end
+
+	::skip_virgin_tiles::
 
 	creep_data["usable_robots"] = creep_data["usable_robots"] - count
 	count                       = 0

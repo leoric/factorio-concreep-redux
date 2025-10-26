@@ -85,6 +85,13 @@ data:extend({
         order = "037b"
     },
     {
+        type = "bool-setting",
+        name = "creep-space-scaffold",
+        setting_type = "runtime-global",
+        default_value = true,
+        order = "037c"
+    },
+    {
         type = "int-setting",
         name = "concreep-agricultural-tower-radius",
         setting_type = "runtime-global",
