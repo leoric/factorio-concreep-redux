@@ -870,6 +870,9 @@ function space_creep(creeper, creep_data)
 	local space_tile_count     = math.max(0,
 										  roboport.logistic_network.get_item_count("se-space-platform-plating") - creep_data["minimum_item_count_setting"])
 
+	-- Declare count variable before any goto to avoid scope issues
+	local count = 0
+
 	-- If space tile placement is disabled, skip virgin tile placement (but still allow upgrades below)
 	if not settings.global["creep-space-scaffold"].value then
 		-- Skip to upgrade phase
@@ -913,8 +916,6 @@ function space_creep(creeper, creep_data)
 	if ghosts >= #space_tiles and ghosts > 0 then
 		return
 	end
-
-	local count = 0
 
 	-- Process empty space tiles - can place both plating and scaffolding
 	for i = #space_tiles, 1, -1 do
