@@ -1246,8 +1246,8 @@ function filter_agricultural_tower_tiles(surface, tiles, base_radius)
 	end
 	for _, g in pairs(ghost_towers) do
 		local r = base_radius
-		if g.ghost_quality and g.ghost_quality.level then
-			r = base_radius + (g.ghost_quality.level * 2)
+		if g.quality and g.quality.level then
+			r = base_radius + (g.quality.level * 2)
 		end
 		all[#all + 1] = { x = g.position.x, y = g.position.y, r = r }
 	end
@@ -1302,8 +1302,8 @@ function is_near_agricultural_tower(surface, position, base_radius)
 		for _, ghost in pairs(ghost_towers) do
 			local tower_radius = base_radius
 			-- Check ghost quality if available
-			if ghost.ghost_quality and ghost.ghost_quality.level then
-				tower_radius = base_radius + (ghost.ghost_quality.level * 2)
+			if ghost.quality and ghost.quality.level then
+				tower_radius = base_radius + (ghost.quality.level * 2)
 			end
 			-- Use tile center for consistency with real tower check; axis-aligned square radius
 			local dx = px - ghost.position.x
