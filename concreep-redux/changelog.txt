@@ -1,4 +1,10 @@
 ---------------------------------------------------------------------------------------------------
+Version: 3.3.2
+Date: 2025/10/26
+  Bugfixes:
+    - Fixed Lua goto scope error in space_creep function that prevented the mod from loading
+
+---------------------------------------------------------------------------------------------------
 Version: 3.3.1
 Date: 2025/10/26
   Added:
@@ -8,7 +14,6 @@ Date: 2025/10/26
     - Increased default value of "Roboports per Cycle" setting from 10 to 25 for improved performance on larger bases
   Bugfixes:
     - Fixed crash when ghost agricultural towers were placed: Changed ghost_quality property access to quality property, which is the correct way to access quality on ghost entities in Factorio 2.0 API
-    - Fixed Lua goto scope error in space_creep function that prevented the mod from loading
 
 ---------------------------------------------------------------------------------------------------
 Version: 3.3.0
