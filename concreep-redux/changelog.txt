@@ -1,4 +1,16 @@
 ---------------------------------------------------------------------------------------------------
+Version: 4.0.0
+Date: TBD
+  Added:
+    - Comprehensive in-game settings GUI (CTRL+J) with tabbed interface
+    - Global Settings tab: manage performance, range, bot usage, and obstacle clearing
+    - Live-apply settings: changes take effect immediately without requiring game restart
+  Changes:
+    - Settings now accessible via GUI in addition to mod settings menu
+  Known Issues:
+    - Surfaces, Tile Placement, and System Status tabs not yet implemented
+
+---------------------------------------------------------------------------------------------------
 Version: 3.3.0
 Date: 2025/10/13
   Added:
