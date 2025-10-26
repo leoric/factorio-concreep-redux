@@ -1,4 +1,10 @@
 ---------------------------------------------------------------------------------------------------
+Version: 3.3.1
+Date: 2025/10/26
+  Bugfixes:
+    - Fixed crash when ghost agricultural towers were placed: Changed ghost_quality property access to quality property, which is the correct way to access quality on ghost entities in Factorio 2.0 API
+
+---------------------------------------------------------------------------------------------------
 Version: 3.3.0
 Date: 2025/10/13
   Added:
