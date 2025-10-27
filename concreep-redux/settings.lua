@@ -11,7 +11,7 @@ data:extend({
         type = "int-setting",
         name = "concreep-update-count",
         setting_type = "runtime-global",
-        default_value = 10,
+        default_value = 25,
         minimum_value = 1,
         order = "002"
     },
@@ -51,7 +51,7 @@ data:extend({
         type = "int-setting",
         name = "concreep-minimum-item-count",
         setting_type = "runtime-global",
-        default_value = 100,
+        default_value = 1000,
         minimum_value = 0,
         order = "033"
     },
@@ -83,6 +83,13 @@ data:extend({
         setting_type = "runtime-global",
         default_value = false,
         order = "037b"
+    },
+    {
+        type = "bool-setting",
+        name = "creep-space-scaffold",
+        setting_type = "runtime-global",
+        default_value = true,
+        order = "037c"
     },
     {
         type = "int-setting",

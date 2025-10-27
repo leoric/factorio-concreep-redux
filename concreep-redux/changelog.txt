@@ -5,10 +5,33 @@ Date: TBD
     - Comprehensive in-game settings GUI (CTRL+J) with tabbed interface
     - Global Settings tab: manage performance, range, bot usage, and obstacle clearing
     - Live-apply settings: changes take effect immediately without requiring game restart
+    - (Space-Exploration) New setting to control automatic space platform expansion: When disabled, prevents automatic placement of tiles on empty space and asteroids in orbital surfaces, but still allows upgrading existing scaffolding to plating
   Changes:
     - Settings now accessible via GUI in addition to mod settings menu
+    - Increased default value of "Minimum Items Available" setting from 100 to 1000 to better handle larger bases
+    - Increased default value of "Roboports per Cycle" setting from 10 to 25 for improved performance on larger bases
+  Bugfixes:
+    - Fixed crash when ghost agricultural towers were placed: Changed ghost_quality property access to quality property, which is the correct way to access quality on ghost entities in Factorio 2.0 API
+    - Fixed Lua goto scope error in space_creep function that prevented the mod from loading
   Known Issues:
     - Surfaces, Tile Placement, and System Status tabs not yet implemented
+
+---------------------------------------------------------------------------------------------------
+Version: 3.3.2
+Date: 2025/10/26
+  Bugfixes:
+    - Fixed Lua goto scope error in space_creep function that prevented the mod from loading
+
+---------------------------------------------------------------------------------------------------
+Version: 3.3.1
+Date: 2025/10/26
+  Added:
+    - (Space-Exploration) New setting to control automatic space platform expansion: When disabled, prevents automatic placement of tiles on empty space and asteroids in orbital surfaces, but still allows upgrading existing scaffolding to plating
+  Changes:
+    - Increased default value of "Minimum Items Available" setting from 100 to 1000 to better handle larger bases
+    - Increased default value of "Roboports per Cycle" setting from 10 to 25 for improved performance on larger bases
+  Bugfixes:
+    - Fixed crash when ghost agricultural towers were placed: Changed ghost_quality property access to quality property, which is the correct way to access quality on ghost entities in Factorio 2.0 API
 
 ---------------------------------------------------------------------------------------------------
 Version: 3.3.0
