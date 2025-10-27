@@ -10,6 +10,14 @@ Concreep Redux is a Factorio mod that automates concrete placement and upgrades 
 
 This is a Factorio 2.0 mod with no external build system. Development involves editing Lua files directly.
 
+### Important: File Path Requirements
+
+**When using Claude Code on Windows, always use complete absolute paths with drive letters and backslashes for ALL file operations.** This is required to work around a file modification bug in Claude Code.
+
+Example:
+- ✅ Correct: `F:\Factorio Mod Development\concreep-redux\concreep-redux\info.json`
+- ❌ Incorrect: `concreep-redux/info.json` or relative paths
+
 ### Mod Structure
 ```
 concreep-redux/
