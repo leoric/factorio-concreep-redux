@@ -1,6 +1,6 @@
 # Concreep Redux
 
-**Automated concrete placement and upgrading for Factorio 2.0**
+**Automated concrete placement and upgrading for Factorio 2.1**
 
 Roboports automatically place and upgrade tiles (stone brick, concrete, refined concrete) within their construction areas. Set it and forget it – your factory floor will tile itself as you expand!
 

@@ -1,4 +1,10 @@
 ---------------------------------------------------------------------------------------------------
+Version: 3.3.3
+Date: 2026/07/14
+  Changes:
+    - Updated factorio_version to 2.1. No code changes required; mod logic does not touch any 2.1 breaking-change surfaces (quality prototype effects, recipe categories, fluid box API, etc).
+
+---------------------------------------------------------------------------------------------------
 Version: 3.3.2
 Date: 2025/10/26
   Bugfixes:
