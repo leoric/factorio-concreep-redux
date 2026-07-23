@@ -1,5 +1,6 @@
 if not mods["space-exploration"] then
     data.raw["bool-setting"]["upgrade-space-scaffold"].hidden = true
+    data.raw["bool-setting"]["creep-space-scaffold"].hidden = true
 end
 
 if not mods["space-age"] then

@@ -865,109 +865,112 @@ function space_creep(creeper, creep_data)
 	local surface      = roboport.surface
 	local force        = roboport.force
 
-	local ghosts       = surface.count_entities_filtered { area = creep_data["area"], name = "tile-ghost", force = force }
-
 	local space_scaffold_count = math.max(0,
 										  roboport.logistic_network.get_item_count("se-space-platform-scaffold") - creep_data["minimum_item_count_setting"])
 	local space_tile_count     = math.max(0,
 										  roboport.logistic_network.get_item_count("se-space-platform-plating") - creep_data["minimum_item_count_setting"])
 
-	-- Two-phase search, similar to landfill_creep:
-	-- Phase 1: Prioritize empty space (se-space) tiles - can place both plating and scaffolding
-	-- Phase 2: Process asteroid (se-asteroid) tiles - can only place plating
-	-- This prevents the API limit from being exhausted by nearby asteroids before reaching distant empty space.
-	
-	-- Phase 1: Search for empty space tiles (se-space)
-	-- Don't use get_virgin_tile_filter because it includes collision_mask="ground_tile"
-	-- which doesn't match space tiles. Build a custom filter for space.
-	local space_tile_filter = {
-		name = "se-space",
-		limit = creep_data["usable_robots"],
-		area = creep_data["area"]
-	}
-	
-	-- Override with position/radius if circular mode (matching get_tile_filter pattern)
-	if creep_data.is_circular then
-		space_tile_filter.position = creep_data.position
-		space_tile_filter.radius = creep_data["current_radius"]
-		space_tile_filter.area = nil  -- Remove area, we'll filter manually
-	end
-	
-	local space_tiles = surface.find_tiles_filtered(space_tile_filter)
-	
-	-- If circular mode, filter to construction area
-	if creep_data.is_circular then
-		space_tiles = filter_tiles_to_construction_area(space_tiles, creep_data["construction_area"])
-	end
-
-	-- Filter out tiles on enemy/disputed territory (Territory Claim mod support)
-	space_tiles = filter_territory_claim_tiles(surface, space_tiles, force)
-
-	-- Wait for ghosts to finish building first.
-	if ghosts >= #space_tiles and ghosts > 0 then
-		return
-	end
-
 	local count = 0
 
-	-- Process empty space tiles - can place both plating and scaffolding
-	for i = #space_tiles, 1, -1 do
-		local ghost_type
-		local tile_position = space_tiles[i].position
+	-- Only do virgin tile placement if the setting is enabled
+	if settings.global["creep-space-scaffold"].value then
+		local ghosts       = surface.count_entities_filtered { area = creep_data["area"], name = "tile-ghost", force = force }
 
-		if count < space_tile_count then
-			ghost_type = "se-space-platform-plating"
-		elseif count < space_scaffold_count then
-			-- Scaffolding can be placed on empty space
-			ghost_type = "se-space-platform-scaffold"
-		end
+		-- Two-phase search, similar to landfill_creep:
+		-- Phase 1: Prioritize empty space (se-space) tiles - can place both plating and scaffolding
+		-- Phase 2: Process asteroid (se-asteroid) tiles - can only place plating
+		-- This prevents the API limit from being exhausted by nearby asteroids before reaching distant empty space.
 
-		if ghost_type then
-			count = count + build_tile(roboport, ghost_type, tile_position, creep_data["construction_area"])
-		end
-
-		creeper.removal_counter = 0
-	end
-
-	if count >= creep_data["usable_robots"] then
-		return true
-	end
-
-	-- Phase 2: If no empty space tiles, search for asteroid tiles (se-asteroid)
-	-- Only place plating on asteroids, never scaffolding
-	if #space_tiles == 0 then
-		local asteroid_tile_filter = {
-			name = "se-asteroid",
+		-- Phase 1: Search for empty space tiles (se-space)
+		-- Don't use get_virgin_tile_filter because it includes collision_mask="ground_tile"
+		-- which doesn't match space tiles. Build a custom filter for space.
+		local space_tile_filter = {
+			name = "se-space",
 			limit = creep_data["usable_robots"],
 			area = creep_data["area"]
 		}
-		
-		if creep_data.is_circular then
-			asteroid_tile_filter.position = creep_data.position
-			asteroid_tile_filter.radius = creep_data["current_radius"]
-			asteroid_tile_filter.area = nil
-		end
-		
-		local asteroid_tiles = surface.find_tiles_filtered(asteroid_tile_filter)
 
+		-- Override with position/radius if circular mode (matching get_tile_filter pattern)
 		if creep_data.is_circular then
-			asteroid_tiles = filter_tiles_to_construction_area(asteroid_tiles, creep_data["construction_area"])
+			space_tile_filter.position = creep_data.position
+			space_tile_filter.radius = creep_data["current_radius"]
+			space_tile_filter.area = nil  -- Remove area, we'll filter manually
+		end
+
+		local space_tiles = surface.find_tiles_filtered(space_tile_filter)
+
+		-- If circular mode, filter to construction area
+		if creep_data.is_circular then
+			space_tiles = filter_tiles_to_construction_area(space_tiles, creep_data["construction_area"])
 		end
 
 		-- Filter out tiles on enemy/disputed territory (Territory Claim mod support)
-		asteroid_tiles = filter_territory_claim_tiles(surface, asteroid_tiles, force)
+		space_tiles = filter_territory_claim_tiles(surface, space_tiles, force)
 
-		-- Process asteroid tiles - can only place plating
-		for i = #asteroid_tiles, 1, -1 do
+		-- Wait for ghosts to finish building first.
+		if ghosts >= #space_tiles and ghosts > 0 then
+			return
+		end
+
+		-- Process empty space tiles - can place both plating and scaffolding
+		for i = #space_tiles, 1, -1 do
+			local ghost_type
+			local tile_position = space_tiles[i].position
+
 			if count < space_tile_count then
-				local tile_position = asteroid_tiles[i].position
-				count = count + build_tile(roboport, "se-space-platform-plating", tile_position, creep_data["construction_area"])
-				creeper.removal_counter = 0
+				ghost_type = "se-space-platform-plating"
+			elseif count < space_scaffold_count then
+				-- Scaffolding can be placed on empty space
+				ghost_type = "se-space-platform-scaffold"
 			end
+
+			if ghost_type then
+				count = count + build_tile(roboport, ghost_type, tile_position, creep_data["construction_area"])
+			end
+
+			creeper.removal_counter = 0
 		end
 
 		if count >= creep_data["usable_robots"] then
 			return true
+		end
+
+		-- Phase 2: If no empty space tiles, search for asteroid tiles (se-asteroid)
+		-- Only place plating on asteroids, never scaffolding
+		if #space_tiles == 0 then
+			local asteroid_tile_filter = {
+				name = "se-asteroid",
+				limit = creep_data["usable_robots"],
+				area = creep_data["area"]
+			}
+
+			if creep_data.is_circular then
+				asteroid_tile_filter.position = creep_data.position
+				asteroid_tile_filter.radius = creep_data["current_radius"]
+				asteroid_tile_filter.area = nil
+			end
+
+			local asteroid_tiles = surface.find_tiles_filtered(asteroid_tile_filter)
+
+			if creep_data.is_circular then
+				asteroid_tiles = filter_tiles_to_construction_area(asteroid_tiles, creep_data["construction_area"])
+			end
+
+			-- Filter out tiles on enemy/disputed territory (Territory Claim mod support)
+			asteroid_tiles = filter_territory_claim_tiles(surface, asteroid_tiles, force)
+
+			-- Process asteroid tiles - can only place plating
+			for i = #asteroid_tiles, 1, -1 do
+				if count < space_tile_count then
+					local tile_position = asteroid_tiles[i].position
+					count = count + build_tile(roboport, "se-space-platform-plating", tile_position, creep_data["construction_area"])
+					creeper.removal_counter = 0
+				end
+			end
+
+			if count >= creep_data["usable_robots"] then
+				return true
+			end
 		end
 	end
 
@@ -1246,8 +1249,8 @@ function filter_agricultural_tower_tiles(surface, tiles, base_radius)
 	end
 	for _, g in pairs(ghost_towers) do
 		local r = base_radius
-		if g.ghost_quality and g.ghost_quality.level then
-			r = base_radius + (g.ghost_quality.level * 2)
+		if g.quality and g.quality.level then
+			r = base_radius + (g.quality.level * 2)
 		end
 		all[#all + 1] = { x = g.position.x, y = g.position.y, r = r }
 	end
@@ -1302,8 +1305,8 @@ function is_near_agricultural_tower(surface, position, base_radius)
 		for _, ghost in pairs(ghost_towers) do
 			local tower_radius = base_radius
 			-- Check ghost quality if available
-			if ghost.ghost_quality and ghost.ghost_quality.level then
-				tower_radius = base_radius + (ghost.ghost_quality.level * 2)
+			if ghost.quality and ghost.quality.level then
+				tower_radius = base_radius + (ghost.quality.level * 2)
 			end
 			-- Use tile center for consistency with real tower check; axis-aligned square radius
 			local dx = px - ghost.position.x
